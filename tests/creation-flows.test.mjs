@@ -11,6 +11,7 @@ test("dashboard exposes both workspace creation entry points", async () => {
   assert.match(source, /新しいワークスペースを作成/);
   assert.match(source, /htmlFor="workspace-name"/);
   assert.match(source, /htmlFor="workspace-slug"/);
+  assert.match(source, /if \(creating\) return/);
   assert.match(source, /disabled=\{creating\}/);
 });
 
@@ -35,7 +36,10 @@ test("scene creation exposes empty and persistent editor flows", async () => {
   assert.match(client, /場面を追加/);
   assert.match(client, /htmlFor="scene-title"/);
   assert.match(client, /htmlFor="scene-confluence-url"/);
+  assert.match(client, /if \(sceneCreating\) return/);
+  assert.match(client, /disabled=\{sceneCreating\}/);
   assert.match(client, /setSelectedId\(result\.scene\.id\)/);
+  assert.match(client, /className="split-workspace"/);
   assert.match(route, /INSERT INTO scenes/);
   assert.match(route, /confluence_page_url/);
 });
