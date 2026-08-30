@@ -135,3 +135,33 @@ export async function PATCH(
     );
   }
 }
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ slug: string }> },
+) {
+  const { slug } = await params;
+  const auth = await authorizeWorkspace(slug, ["owner", "editor"]);
+  if (!auth.ok) return auth.response;
+  const body = (await request.json().catch(() => ({}))) as { id?: string };
+  if (!body.id)
+    return Response.json({ error: "削除する場面が指定されていません" }, { status: 400 });
+  const database = db();
+  const scene = await database
+    .prepare("SELECT id FROM scenes WHERE id=?1 AND workspace_id=?2")
+    .bind(body.id, auth.membership.workspace_id)
+    .first();
+  if (!scene) return Response.json({ error: "場面が見つかりません" }, { status: 404 });
+  await database.batch([
+    database
+      .prepare("DELETE FROM scene_confluence_attachments WHERE scene_id=?1 AND workspace_id=?2")
+      .bind(body.id, auth.membership.workspace_id),
+    database
+      .prepare("DELETE FROM scene_confluence_sources WHERE scene_id=?1 AND workspace_id=?2")
+      .bind(body.id, auth.membership.workspace_id),
+    database
+      .prepare("DELETE FROM scenes WHERE id=?1 AND workspace_id=?2")
+      .bind(body.id, auth.membership.workspace_id),
+  ]);
+  return Response.json({ ok: true });
+}

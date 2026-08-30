@@ -83,7 +83,11 @@ function absolute(value: string, base: string, image = false) {
   } catch { return ""; }
 }
 
-export function sanitizeConfluenceHtml(html: string, baseUrl: string, imageResolver?: (absoluteSource: string) => string | null) {
+export function sanitizeConfluenceHtml(
+  html: string,
+  baseUrl: string,
+  imageResolver?: (absoluteSource: string, attributes: Record<string, string>) => string | null,
+) {
   return sanitizeHtml(html, {
     allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img", "figure", "figcaption", "details", "summary", "time", "mark", "thead", "tbody", "tfoot"]),
     allowedAttributes: {
@@ -98,7 +102,7 @@ export function sanitizeConfluenceHtml(html: string, baseUrl: string, imageResol
       a: (_tag, attrs) => ({ tagName: "a", attribs: { ...attrs, href: absolute(attrs.href ?? "", baseUrl), target: "_blank", rel: "noopener noreferrer" } }),
       img: (_tag, attrs) => {
         const source = absolute(attrs.src ?? "", baseUrl, true);
-        const rewritten = imageResolver ? imageResolver(source) : source;
+        const rewritten = imageResolver ? imageResolver(source, attrs) : source;
         return { tagName: "img", attribs: {
           ...attrs,
           src: rewritten ?? "",
@@ -130,12 +134,33 @@ export type ConfluenceAttachmentDescriptor = {
   downloadLink: string;
 };
 
+function normalizedFilename(value: string) {
+  try { return decodeURIComponent(value).normalize("NFKC").toLocaleLowerCase("en-US"); }
+  catch { return value.normalize("NFKC").toLocaleLowerCase("en-US"); }
+}
+
 function sourceFilename(source: string) {
   try {
-    const pathname = new URL(source).pathname;
+    const url = new URL(source);
+    const explicit = url.searchParams.get("filename") ?? url.searchParams.get("fileName");
+    if (explicit) return normalizedFilename(explicit);
+    const pathname = url.pathname;
     const filename = pathname.split("/").filter(Boolean).at(-1) ?? "";
-    return decodeURIComponent(filename).toLowerCase();
+    return normalizedFilename(filename);
   } catch { return ""; }
+}
+
+function storageImagesToViewHtml(html: string, baseUrl: string, pageId: string) {
+  return html.replace(
+    /<ac:image\b([^>]*)>[\s\S]*?<ri:attachment\b[^>]*ri:filename=(?:"([^"]+)"|'([^']+)')[^>]*\/?>(?:[\s\S]*?<\/ac:image>)?/gi,
+    (_whole, imageAttributes: string, doubleQuoted: string, singleQuoted: string) => {
+      const filename = doubleQuoted ?? singleQuoted ?? "";
+      const width = imageAttributes.match(/ac:width=(?:"(\d+)"|'(\d+)')/i)?.slice(1).find(Boolean);
+      const height = imageAttributes.match(/ac:height=(?:"(\d+)"|'(\d+)')/i)?.slice(1).find(Boolean);
+      const source = new URL(`/wiki/download/attachments/${pageId}/${encodeURIComponent(filename)}`, baseUrl).toString();
+      return `<img src="${source}" alt="${filename.replace(/[&<>"']/g, "")}"${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""}>`;
+    },
+  );
 }
 
 export function sanitizeConfluenceHtmlWithAttachments(
@@ -151,11 +176,17 @@ export function sanitizeConfluenceHtmlWithAttachments(
     && item.fileSize <= MAX_CONFLUENCE_IMAGE_BYTES,
   );
   let missingImages = 0;
-  const sanitizedHtml = sanitizeConfluenceHtml(html, baseUrl, (source) => {
+  const pageId = safeAttachments[0]?.pageId ?? attachments[0]?.pageId ?? "";
+  const normalizedHtml = pageId ? storageImagesToViewHtml(html, baseUrl, pageId) : html;
+  const sanitizedHtml = sanitizeConfluenceHtml(normalizedHtml, baseUrl, (source, attributes) => {
     const filename = sourceFilename(source);
     let attachmentId = "";
     try { attachmentId = new URL(source).searchParams.get("attachmentId") ?? ""; } catch { /* invalid source */ }
-    const match = safeAttachments.find((item) => item.id === attachmentId || item.title.toLowerCase() === filename);
+    const attributeFilename = normalizedFilename(attributes.alt || attributes.title || "");
+    const match = safeAttachments.find((item) => {
+      const title = normalizedFilename(item.title);
+      return item.id === attachmentId || title === filename || Boolean(attributeFilename && title === attributeFilename);
+    });
     if (!match) { missingImages += 1; return null; }
     return `${proxyPrefix}/${encodeURIComponent(match.id)}`;
   });

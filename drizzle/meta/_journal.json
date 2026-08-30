@@ -43,6 +43,13 @@
       "when": 1788126500727,
       "tag": "0005_nifty_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788128443121,
+      "tag": "0006_parallel_talisman",
+      "breakpoints": true
     }
   ]
 }

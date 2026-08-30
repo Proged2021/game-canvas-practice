@@ -1,5 +1,6 @@
 import { authorizeWorkspace } from "@/lib/auth";
 import { accessToken, getConnection } from "@/lib/confluence";
+import { fetchAtlassianAttachmentBinary } from "@/lib/confluence-image";
 import { MAX_CONFLUENCE_IMAGE_BYTES, SAFE_IMAGE_MEDIA_TYPES } from "@/lib/confluence-safe";
 import { db } from "@/lib/db";
 
@@ -47,18 +48,14 @@ export async function GET(
 
     const gatewayPath = downloadPath.startsWith("/wiki/") ? downloadPath : `/wiki${downloadPath}`;
     const downloadUrl = `https://api.atlassian.com/ex/confluence/${connection.cloud_id}${gatewayPath}`;
-    const imageResponse = await fetch(downloadUrl, { redirect: "follow", headers: { authorization: `Bearer ${token}`, accept: mediaType } });
-    if (!imageResponse.ok || !imageResponse.body) return imageError("Confluence画像を取得できませんでした。", 502);
-    const responseType = (imageResponse.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();
-    const responseLength = Number(imageResponse.headers.get("content-length") ?? metadata.fileSize);
-    if (!SAFE_IMAGE_MEDIA_TYPES.has(responseType) || !Number.isFinite(responseLength) || responseLength > MAX_CONFLUENCE_IMAGE_BYTES)
-      return imageError("安全に表示できない画像データです。", 415);
-    return new Response(imageResponse.body, {
+    const image = await fetchAtlassianAttachmentBinary(downloadUrl, token, mediaType);
+    if (!image.ok) return imageError("Confluence画像を安全に取得できませんでした。", image.status);
+    return new Response(image.bytes, {
       status: 200,
       headers: {
-        "content-type": responseType,
+        "content-type": image.mediaType,
         "content-disposition": "inline",
-        "content-length": String(responseLength),
+        "content-length": String(image.bytes.byteLength),
         "cache-control": "private, max-age=300",
         "x-content-type-options": "nosniff",
       },

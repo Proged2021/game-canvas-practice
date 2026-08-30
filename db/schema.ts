@@ -110,6 +110,58 @@ export const confluenceAttachments = sqliteTable(
   ],
 );
 
+export const sceneConfluenceSources = sqliteTable(
+  "scene_confluence_sources",
+  {
+    sceneId: text("scene_id")
+      .primaryKey()
+      .references(() => scenes.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    pageUrl: text("page_url").notNull(),
+    pageTitle: text("page_title").notNull(),
+    pageVersion: integer("page_version").notNull(),
+    syncedHtml: text("synced_html").notNull(),
+    lastSyncedAt: text("last_synced_at").notNull(),
+    lastCheckedAt: text("last_checked_at"),
+    lastError: text("last_error"),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("scene_confluence_sources_workspace_idx").on(table.workspaceId),
+    index("scene_confluence_sources_page_idx").on(table.workspaceId, table.pageId),
+  ],
+);
+
+export const sceneConfluenceAttachments = sqliteTable(
+  "scene_confluence_attachments",
+  {
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => scenes.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    attachmentId: text("attachment_id").notNull(),
+    filename: text("filename").notNull(),
+    mediaType: text("media_type").notNull(),
+    fileSize: integer("file_size").notNull(),
+    downloadPath: text("download_path").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sceneId, table.pageId, table.attachmentId] }),
+    index("scene_confluence_attachments_lookup_idx").on(
+      table.workspaceId,
+      table.sceneId,
+      table.pageId,
+    ),
+  ],
+);
+
 export const oauthStates = sqliteTable("oauth_states", {
   state: text("state").primaryKey(),
   workspaceId: text("workspace_id")

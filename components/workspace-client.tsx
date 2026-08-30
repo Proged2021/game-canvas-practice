@@ -23,7 +23,6 @@ import {
   Plus,
   RefreshCw,
   Redo2,
-  Settings2,
   Undo2,
   Users,
 } from "lucide-react";
@@ -68,17 +67,22 @@ type Scene = {
   updated_by: string;
   updated_at?: string;
 };
-type Confluence = {
+type ConfluenceConnection = {
   connected?: number;
-  page_id?: string;
-  page_url?: string;
-  page_title?: string;
-  page_version?: number;
-  synced_html?: string;
-  last_synced_at?: string;
   last_error?: string;
   attachment_scope_granted?: number;
 } | null;
+type SceneConfluenceSource = {
+  scene_id: string;
+  page_id: string;
+  page_url: string;
+  page_title: string;
+  page_version: number;
+  synced_html: string;
+  last_synced_at: string;
+  last_checked_at?: string;
+  last_error?: string | null;
+};
 type ConfluenceStatus = {
   state: "unconfigured" | "available" | "connected" | "reauth_required";
   configured: boolean;
@@ -144,7 +148,7 @@ export type WorkspaceData = {
   members: Array<{ role: string; created_at: string }>;
   invitations: Array<{ id: string; role: "editor" | "viewer"; status: string; expires_at: string; created_at: string }>;
   joinRequests: Array<{ id: string; confirmation_code: string; role: "editor" | "viewer"; status: string; created_at: string; expires_at: string }>;
-  confluence: Confluence;
+  confluence: ConfluenceConnection;
 };
 
 export function WorkspaceClient({
@@ -170,6 +174,9 @@ export function WorkspaceClient({
       initialData.scenes[0]?.confluence_page_url ?? "",
     ),
     [syncing, setSyncing] = useState(false);
+  const [sceneSource, setSceneSource] = useState<SceneConfluenceSource | null>(null);
+  const [sourceLoading, setSourceLoading] = useState(Boolean(initialData.scenes[0]));
+  const [confluenceDialogOpen, setConfluenceDialogOpen] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<{
     type: "progress" | "success" | "error";
     message: string;
@@ -196,6 +203,7 @@ export function WorkspaceClient({
   );
   const savingSceneIds = useRef(new Set<string>());
   const queuedSceneIds = useRef(new Set<string>());
+  const sourceRequestSequence = useRef(0);
   const active = useMemo(
     () => data?.scenes.find((s) => s.id === selectedId) ?? data?.scenes[0],
     [data, selectedId],
@@ -264,9 +272,11 @@ export function WorkspaceClient({
     if (result && messages[result]) queueMicrotask(() => setError(messages[result]));
   }, [slug]);
   useEffect(() => {
-    if (!data?.confluence?.connected) return;
+    if (!data?.confluence?.connected || !active?.id || !sceneSource) return;
     const timer = setInterval(async () => {
-      const r = await fetch(`/api/workspaces/${slug}/confluence/sync`);
+      const r = await fetch(
+        `/api/workspaces/${slug}/confluence/sync?sceneId=${encodeURIComponent(active.id)}`,
+      );
       const d = (await r.json()) as {
         hasUpdate?: boolean;
         remoteVersion?: number;
@@ -283,11 +293,44 @@ export function WorkspaceClient({
         );
     }, 60_000);
     return () => clearInterval(timer);
-  }, [data?.confluence?.connected, slug]);
+  }, [active?.id, data?.confluence?.connected, sceneSource, slug]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- The connection field follows the newly selected scene.
+    const sceneId = active?.id;
+    const sequence = ++sourceRequestSequence.current;
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous scene immediately so stale Confluence content is never shown.
+    setSceneSource(null);
+    setSyncFeedback(null);
     setPageInput(active?.confluence_page_url ?? "");
-  }, [active?.id, active?.confluence_page_url]);
+    if (!sceneId) {
+      setSourceLoading(false);
+      return () => controller.abort();
+    }
+    setSourceLoading(true);
+    fetch(
+      `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(sceneId)}`,
+      { cache: "no-store", signal: controller.signal },
+    )
+      .then(async (response) => {
+        const result = (await response.json()) as {
+          source?: SceneConfluenceSource | null;
+          error?: string;
+        };
+        if (!response.ok) throw new Error(result.error);
+        if (sequence !== sourceRequestSequence.current) return;
+        setSceneSource(result.source ?? null);
+        setPageInput(result.source?.page_url ?? active?.confluence_page_url ?? "");
+      })
+      .catch((reason) => {
+        if (controller.signal.aborted || sequence !== sourceRequestSequence.current)
+          return;
+        setError(reason instanceof Error ? reason.message : "場面のConfluence情報を読み込めませんでした");
+      })
+      .finally(() => {
+        if (sequence === sourceRequestSequence.current) setSourceLoading(false);
+      });
+    return () => controller.abort();
+  }, [active?.id, active?.confluence_page_url, slug]);
   async function save(scene: Scene) {
     if (savingSceneIds.current.has(scene.id)) {
       queuedSceneIds.current.add(scene.id);
@@ -494,37 +537,85 @@ export function WorkspaceClient({
     await load();
   }
   async function sync() {
-    if (syncing) return;
+    if (syncing || !active) return;
     setSyncing(true);
     setSyncFeedback({ type: "progress", message: "Confluenceを同期中です…" });
     try {
       const r = await fetch(`/api/workspaces/${slug}/confluence/sync`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ page: pageInput || data?.confluence?.page_id }),
+        body: JSON.stringify({ sceneId: active.id, page: pageInput || sceneSource?.page_id }),
       });
       const d = await r.json().catch(() => ({})) as {
         error?: string;
         nextAction?: string;
         message?: string;
         warnings?: string[];
-        confluence?: Confluence;
+        source?: SceneConfluenceSource;
       };
       if (!r.ok) {
         const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, d.nextAction].filter(Boolean).join(" ");
         setSyncFeedback({ type: "error", message: detail });
         return;
       }
-      if (!d.confluence) {
+      if (!d.source) {
         setSyncFeedback({ type: "error", message: "同期結果を読み取れませんでした。ページを再読み込みしてから、もう一度お試しください。" });
         return;
       }
-      setData((p) => (p ? { ...p, confluence: d.confluence ?? null } : p));
+      setSceneSource(d.source);
+      setPageInput(d.source.page_url);
+      setData((previous) =>
+        previous
+          ? {
+              ...previous,
+              scenes: previous.scenes.map((scene) =>
+                scene.id === active.id
+                  ? { ...scene, confluence_page_url: d.source?.page_url ?? null }
+                  : scene,
+              ),
+            }
+          : previous,
+      );
       setError("");
       const warning = d.warnings?.length ? ` ${d.warnings.join(" ")}` : "";
       setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${warning}` });
     } catch {
       setSyncFeedback({ type: "error", message: "同期APIと通信できませんでした。ネットワークを確認し、時間をおいて1回だけ再試行してください。" });
+    } finally {
+      setSyncing(false);
+    }
+  }
+  async function unlinkConfluenceSource() {
+    if (!active || syncing) return;
+    setSyncing(true);
+    setSyncFeedback({ type: "progress", message: "この場面との関連付けを解除しています…" });
+    try {
+      const response = await fetch(
+        `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(active.id)}`,
+        { method: "DELETE" },
+      );
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error);
+      setSceneSource(null);
+      setPageInput("");
+      setData((previous) =>
+        previous
+          ? {
+              ...previous,
+              scenes: previous.scenes.map((scene) =>
+                scene.id === active.id
+                  ? { ...scene, confluence_page_url: null }
+                  : scene,
+              ),
+            }
+          : previous,
+      );
+      setSyncFeedback({ type: "success", message: "この場面のConfluence関連付けを解除しました。" });
+    } catch (reason) {
+      setSyncFeedback({
+        type: "error",
+        message: reason instanceof Error ? reason.message : "関連付けを解除できませんでした。",
+      });
     } finally {
       setSyncing(false);
     }
@@ -759,98 +850,34 @@ export function WorkspaceClient({
           <div className="pane-heading">
             <div>
               <p className="pane-kicker">CONFLUENCE STORY</p>
-              <h2>{data.confluence?.page_title ?? "ストーリー本文"}</h2>
+              <h2>{sceneSource?.page_title ?? active?.title ?? "ストーリー本文"}</h2>
             </div>
             <div className="pane-tools">
-              {data.confluence?.page_version && (
+              {sceneSource?.page_version && (
                 <Badge variant="secondary">
-                  v{data.confluence.page_version}
+                  v{sceneSource.page_version}
                 </Badge>
               )}
-              {data.workspace.role === "owner" && <Dialog>
-                <DialogTrigger asChild>
-                  <Button variant="outline" size="sm">
-                    <Settings2 size={15} />
-                    接続設定
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Confluence Cloud</DialogTitle>
-                    <DialogDescription>
-                      Atlassian OAuth
-                      2.0で接続し、ページIDまたはURLから表示用HTMLを取得します。
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="connection-state" role="status">
-                    <strong>{confluenceStatus ? CONFLUENCE_STATUS_LABELS[confluenceStatus.state] : "設定を確認中"}</strong>
-                    {!data.confluence?.connected && !confluenceStatus?.configured && <p>Confluence連携は未設定です。次のSecretsを設定してください。</p>}
-                  </div>
-                  {(!data.confluence?.connected || confluenceStatus?.state === "reauth_required") && (
-                    <ConfluenceConnectLink slug={slug} configured={confluenceStatus?.configured} />
-                  )}
-                  {confluenceStatus?.state === "reauth_required" && <p className="form-error">Atlassianの追加権限を許可して再接続してください。</p>}
-                  <div className="oauth-public-info">
-                    <strong>必要なSecret名</strong>
-                    <div className="copy-row"><code>ATLASSIAN_CLIENT_ID</code><Button type="button" size="sm" variant="outline" aria-label="Client IDのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_ID")}><Copy size={14} />コピー</Button></div>
-                    <div className="copy-row"><code>ATLASSIAN_CLIENT_SECRET</code><Button type="button" size="sm" variant="outline" aria-label="Client SecretのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_SECRET")}><Copy size={14} />コピー</Button></div>
-                    <strong>Callback URL</strong>
-                    <div className="copy-row"><code>{confluenceStatus?.callbackUrl ?? CONFLUENCE_CALLBACK_URL}</code><Button type="button" size="sm" variant="outline" aria-label="Callback URLをコピー" onClick={() => navigator.clipboard.writeText(confluenceStatus?.callbackUrl ?? CONFLUENCE_CALLBACK_URL)}><Copy size={14} />コピー</Button></div>
-                    <ol className="setup-steps">
-                      <li>Atlassian Developer ConsoleでOAuth 2.0 (3LO)アプリを作成します。</li>
-                      <li>AuthorizationのCallback URLへ上記URLを完全一致で登録します。</li>
-                      <li>PermissionsでConfluenceのread:page:confluenceとread:attachment:confluenceを追加します。</li>
-                      <li>SiteのSecretsへ上記2項目を登録し、再デプロイします。</li>
-                      <li>オーナーが「Atlassianに接続」を押し、対象ページを同期します。</li>
-                    </ol>
-                  </div>
-                  <Input
-                    value={pageInput}
-                    onChange={(e) => setPageInput(e.target.value)}
-                    placeholder="ページID または https://…/pages/123…"
-                  />
-                  <Button
-                    onClick={sync}
-                    disabled={
-                      syncing || (!pageInput && !data.confluence?.page_id)
-                    }
-                  >
-                    {syncing ? <Loader2 className="spin" /> : <RefreshCw />}
-                    {syncing ? "同期中…" : "同期する"}
-                  </Button>
-                  {syncFeedback && (
-                    <p className={syncFeedback.type === "error" ? "form-error" : "sync-feedback"} role={syncFeedback.type === "error" ? "alert" : "status"} aria-live="polite">
-                      {syncFeedback.type === "success" && <Check size={16} />}
-                      {syncFeedback.type === "progress" && <Loader2 size={16} className="spin" />}
-                      {syncFeedback.type === "error" && <AlertCircle size={16} />}
-                      {syncFeedback.message}
-                    </p>
-                  )}
-                  {data.confluence?.last_synced_at && (
-                    <p className="sync-meta">
-                      最終同期:{" "}
-                      {new Date(data.confluence.last_synced_at).toLocaleString(
-                        "ja-JP",
-                      )}
-                    </p>
-                  )}
-                </DialogContent>
-              </Dialog>}
             </div>
           </div>
           <div className="story-scroll">
-            {data.confluence?.synced_html ? (
+            {sourceLoading ? (
+              <div className="confluence-loading" role="status" aria-live="polite">
+                <Loader2 className="spin" />
+                <span>選択した場面のConfluence本文を読み込んでいます…</span>
+              </div>
+            ) : sceneSource?.synced_html ? (
               <>
                 <div
                   className="confluence-html"
                   dangerouslySetInnerHTML={{
-                    __html: data.confluence.synced_html,
+                    __html: sceneSource.synced_html,
                   }}
                 />
-                {data.confluence.page_url && (
+                {sceneSource.page_url && (
                   <a
                     className="source-link"
-                    href={data.confluence.page_url}
+                    href={sceneSource.page_url}
                     target="_blank"
                     rel="noopener noreferrer"
                   >
@@ -863,11 +890,8 @@ export function WorkspaceClient({
                 <div className="story-empty-icon">
                   <FileText size={28} />
                 </div>
-                <h3>Confluenceページを接続</h3>
-                <p>画像・リンク・書式を保った読み取り専用本文を表示します。</p>
-                {data.workspace.role === "owner" && (
-                  <ConfluenceConnectLink slug={slug} configured={confluenceStatus?.configured} />
-                )}
+                <h3>この場面にはConfluenceページが設定されていません</h3>
+                <p>編集モードで「Confluenceを追加」から、この場面専用のページを同期できます。</p>
               </div>
             )}
           </div>
@@ -913,6 +937,139 @@ export function WorkspaceClient({
                     最終更新 {active.updated_by}
                   </span>
                 </div>
+                {editMode && editable && (
+                  <div className="scene-confluence-toolbar">
+                    <div>
+                      <Link2 size={14} />
+                      <span>
+                        {sceneSource
+                          ? `Confluence: ${sceneSource.page_title}`
+                          : "Confluence未設定"}
+                      </span>
+                    </div>
+                    <Dialog
+                      open={confluenceDialogOpen}
+                      onOpenChange={(open) => {
+                        if (!syncing) setConfluenceDialogOpen(open);
+                      }}
+                    >
+                      <DialogTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <Link2 size={14} />
+                          {sceneSource ? "Confluenceを変更" : "Confluenceを追加"}
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>
+                            「{active.title || "無題"}」のConfluence
+                          </DialogTitle>
+                          <DialogDescription>
+                            この場面だけに表示するConfluenceページを設定します。ほかの場面の同期内容は変更されません。
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="connection-state" role="status">
+                          <strong>
+                            {confluenceStatus
+                              ? CONFLUENCE_STATUS_LABELS[confluenceStatus.state]
+                              : "設定を確認中"}
+                          </strong>
+                        </div>
+                        {!data.confluence?.connected ? (
+                          data.workspace.role === "owner" ? (
+                            <>
+                              <p>最初にワークスペースをAtlassianへ接続してください。</p>
+                              <ConfluenceConnectLink
+                                slug={slug}
+                                configured={confluenceStatus?.configured}
+                              />
+                              {!confluenceStatus?.configured && (
+                                <div className="oauth-public-info">
+                                  <strong>必要なSecret名</strong>
+                                  <code>ATLASSIAN_CLIENT_ID</code>
+                                  <code>ATLASSIAN_CLIENT_SECRET</code>
+                                  <strong>Callback URL</strong>
+                                  <code>{CONFLUENCE_CALLBACK_URL}</code>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <p className="form-error">
+                              オーナーがAtlassian接続を完了すると、この場面へページを追加できます。
+                            </p>
+                          )
+                        ) : (
+                          <>
+                            {confluenceStatus?.state === "reauth_required" && (
+                              <div className="scene-reauthentication">
+                                <p className="form-error">
+                                  画像を表示するには、Atlassianの追加権限を許可して再接続してください。
+                                </p>
+                                {data.workspace.role === "owner" && (
+                                  <ConfluenceConnectLink
+                                    slug={slug}
+                                    configured={confluenceStatus.configured}
+                                  />
+                                )}
+                              </div>
+                            )}
+                            <label htmlFor="scene-confluence-page">
+                              この場面のページIDまたはURL
+                            </label>
+                            <Input
+                              id="scene-confluence-page"
+                              value={pageInput}
+                              onChange={(event) => setPageInput(event.target.value)}
+                              placeholder="ページID または https://…/pages/123…"
+                            />
+                            <div className="scene-confluence-actions">
+                              <Button
+                                onClick={sync}
+                                disabled={syncing || (!pageInput && !sceneSource?.page_id)}
+                              >
+                                {syncing ? <Loader2 className="spin" /> : <RefreshCw />}
+                                {syncing ? "同期中…" : "同期する"}
+                              </Button>
+                              {sceneSource && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={unlinkConfluenceSource}
+                                  disabled={syncing}
+                                >
+                                  関連付けを解除
+                                </Button>
+                              )}
+                            </div>
+                            {syncFeedback && (
+                              <p
+                                className={
+                                  syncFeedback.type === "error"
+                                    ? "form-error"
+                                    : "sync-feedback"
+                                }
+                                role={syncFeedback.type === "error" ? "alert" : "status"}
+                                aria-live="polite"
+                              >
+                                {syncFeedback.type === "success" && <Check size={16} />}
+                                {syncFeedback.type === "progress" && (
+                                  <Loader2 size={16} className="spin" />
+                                )}
+                                {syncFeedback.type === "error" && <AlertCircle size={16} />}
+                                {syncFeedback.message}
+                              </p>
+                            )}
+                            {sceneSource?.last_synced_at && (
+                              <p className="sync-meta">
+                                最終同期: {new Date(sceneSource.last_synced_at).toLocaleString("ja-JP")}
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                )}
                 <div
                   className={`editor-content ${editMode && editable ? "is-editing" : "is-reading"}`}
                 >

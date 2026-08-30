@@ -148,12 +148,8 @@ test("server-renders direct workspace links with saved scene content", async () 
   assert.match(html, /テスト1場面/);
   assert.match(html, /# 保存済みMarkdown/);
   assert.match(html, /href="\/"/);
-  assert.match(html, /href="https:\/\/game-canvas\.app\/api\/workspaces\/workspace-06908b60-3df\/confluence\/start"/);
-  assert.match(html, /target="_blank"/);
-  assert.match(html, /rel="noopener noreferrer"/);
-  assert.match(html, /target="_top"/);
-  assert.match(html, /認証リンクをコピー/);
-  assert.match(html, /同じChatGPTアカウントでログインした通常ブラウザ/);
+  assert.match(html, /Confluenceを追加/);
+  assert.doesNotMatch(html, /接続設定/);
   assert.doesNotMatch(html, /ワークスペースを読み込んでいます/);
 });
 
