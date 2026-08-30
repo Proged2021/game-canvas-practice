@@ -190,6 +190,7 @@ export type ConfluenceImageReference = {
   normalizedFilename: string;
   attachmentId?: string;
   fileId?: string;
+  sourceUrl?: string;
 };
 
 export function extractConfluenceStorageImageReferences(storageHtml: string) {
@@ -208,6 +209,66 @@ export function extractConfluenceStorageImageReferences(storageHtml: string) {
       fileId: attributeValue(attachment[1], "file-id") || undefined,
     });
   }
+  return references;
+}
+
+export function extractConfluenceHtmlImageReferences(html: string, baseUrl: string) {
+  const references: ConfluenceImageReference[] = [];
+  for (const match of html.matchAll(/<img\b([^>]*)>/gi)) {
+    const attributes = match[1];
+    const rawSource = attributeValue(attributes, "src");
+    const filename = attributeValue(attributes, "data-linked-resource-default-alias")
+      || attributeValue(attributes, "alt")
+      || attributeValue(attributes, "title")
+      || sourceFilename(rawSource);
+    if (!filename && !rawSource) continue;
+    references.push({
+      filename,
+      normalizedFilename: normalizeConfluenceFilename(filename),
+      attachmentId: attributeValue(attributes, "data-attachment-id")
+        || attributeValue(attributes, "data-linked-resource-id")
+        || undefined,
+      fileId: attributeValue(attributes, "data-media-id") || undefined,
+      sourceUrl: rawSource ? absolute(rawSource, baseUrl, true) : undefined,
+    });
+  }
+  return references;
+}
+
+export function extractConfluenceAdfImageReferences(value: unknown) {
+  let root: unknown = value;
+  if (typeof value === "string") {
+    try { root = JSON.parse(value); } catch { return []; }
+  }
+  const references: ConfluenceImageReference[] = [];
+  const walk = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    const attrs = record.attrs && typeof record.attrs === "object"
+      ? record.attrs as Record<string, unknown>
+      : undefined;
+    if (record.type === "media" && attrs) {
+      const filename = typeof attrs.alt === "string" ? attrs.alt
+        : typeof attrs.filename === "string" ? attrs.filename
+          : typeof attrs.name === "string" ? attrs.name : "";
+      const attachmentId = typeof attrs.id === "string" ? attrs.id : undefined;
+      const fileId = typeof attrs.fileId === "string" ? attrs.fileId : attachmentId;
+      const sourceUrl = typeof attrs.url === "string" ? attrs.url
+        : typeof attrs.src === "string" ? attrs.src : undefined;
+      if (filename || attachmentId || sourceUrl) references.push({
+        filename,
+        normalizedFilename: normalizeConfluenceFilename(filename),
+        attachmentId,
+        fileId,
+        sourceUrl,
+      });
+    }
+    for (const child of Object.values(record)) {
+      if (Array.isArray(child)) child.forEach(walk);
+      else if (child && typeof child === "object") walk(child);
+    }
+  };
+  walk(root);
   return references;
 }
 

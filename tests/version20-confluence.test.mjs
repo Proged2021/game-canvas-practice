@@ -89,14 +89,14 @@ test("attachment proxy enforces membership, page relation, MIME, size and safe h
   assert.doesNotMatch(proxy, /Response\.redirect/);
 });
 
-test("sync requests attachment scope and keeps image failures non-fatal", async () => {
+test("sync requests attachment scope and preserves the old snapshot on image failures", async () => {
   const [safe, sync, callback, attachments] = await Promise.all([
     read("lib/confluence-safe.ts"), read("app/api/workspaces/[slug]/confluence/sync/route.ts"), read("app/api/confluence/callback/route.ts"), read("lib/confluence-attachments.ts"),
   ]);
   assert.match(safe, /read:attachment:confluence/);
-  assert.match(sync, /fetchAllPageAttachments/);
+  assert.match(sync, /fetchConfluenceImageSnapshots/);
   assert.match(attachments, /pages\/\$\{encodeURIComponent\(pageId\)\}\/attachments\?limit=\$\{PAGE_LIMIT\}/);
-  assert.match(sync, /本文は同期しましたが/);
-  assert.match(sync, /warnings/);
+  assert.match(sync, /前回の同期結果を保持しました/);
+  assert.match(sync, /assets/);
   assert.match(callback, /attachment_scope_granted/);
 });

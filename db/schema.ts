@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  blob,
   index,
   integer,
   primaryKey,
@@ -127,12 +128,43 @@ export const sceneConfluenceSources = sqliteTable(
     lastSyncedAt: text("last_synced_at").notNull(),
     lastCheckedAt: text("last_checked_at"),
     lastError: text("last_error"),
+    assetGeneration: text("asset_generation"),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     index("scene_confluence_sources_workspace_idx").on(table.workspaceId),
     index("scene_confluence_sources_page_idx").on(table.workspaceId, table.pageId),
   ],
+);
+
+export const sceneConfluenceAssets = sqliteTable(
+  "scene_confluence_assets",
+  {
+    assetKey: text("asset_key").primaryKey(),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id").notNull().references(() => scenes.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    originalFilename: text("original_filename").notNull(),
+    mime: text("mime").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    generation: text("generation").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("scene_confluence_assets_generation_idx").on(table.workspaceId, table.sceneId, table.generation),
+    index("scene_confluence_assets_page_idx").on(table.workspaceId, table.sceneId, table.pageId),
+  ],
+);
+
+export const sceneConfluenceAssetChunks = sqliteTable(
+  "scene_confluence_asset_chunks",
+  {
+    assetKey: text("asset_key").notNull().references(() => sceneConfluenceAssets.assetKey, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    data: blob("data", { mode: "buffer" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.assetKey, table.chunkIndex] })],
 );
 
 export const sceneConfluenceAttachments = sqliteTable(

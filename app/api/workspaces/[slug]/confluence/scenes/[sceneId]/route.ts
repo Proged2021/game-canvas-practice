@@ -38,6 +38,9 @@ export async function DELETE(
   const database = db();
   await database.batch([
     database
+      .prepare("DELETE FROM scene_confluence_assets WHERE scene_id=?1 AND workspace_id=?2")
+      .bind(sceneId, auth.membership.workspace_id),
+    database
       .prepare("DELETE FROM scene_confluence_attachments WHERE scene_id=?1 AND workspace_id=?2")
       .bind(sceneId, auth.membership.workspace_id),
     database

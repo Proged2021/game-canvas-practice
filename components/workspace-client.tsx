@@ -559,10 +559,14 @@ export function WorkspaceClient({
         nextAction?: string;
         message?: string;
         warnings?: string[];
+        assets?: { saved: number; failed: number; reasons?: Record<string, number> };
         source?: SceneConfluenceSource;
       };
       if (!r.ok) {
-        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, d.nextAction].filter(Boolean).join(" ");
+        const countDetail = d.assets
+          ? `画像は${d.assets.saved}件を取得・保存し、${d.assets.failed}件が失敗しました。`
+          : "";
+        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, countDetail, d.nextAction].filter(Boolean).join(" ");
         setSyncFeedback({ type: "error", message: detail });
         return;
       }
@@ -586,7 +590,8 @@ export function WorkspaceClient({
       );
       setError("");
       const warning = d.warnings?.length ? ` ${d.warnings.join(" ")}` : "";
-      setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${warning}` });
+      const assetResult = d.assets ? ` 画像は${d.assets.saved}件を取得・内部保存し、失敗は${d.assets.failed}件でした。` : "";
+      setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${assetResult}${warning}` });
     } catch {
       setSyncFeedback({ type: "error", message: "同期APIと通信できませんでした。ネットワークを確認し、時間をおいて1回だけ再試行してください。" });
     } finally {

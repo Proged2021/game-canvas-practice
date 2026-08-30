@@ -8,9 +8,13 @@ import {
   resolveConfluenceShortUrl,
 } from "@/lib/confluence";
 import {
-  fetchAllPageAttachments,
-} from "@/lib/confluence-attachments";
+  discardSceneAssetGeneration,
+  stageSceneAssets,
+} from "@/lib/confluence-assets";
+import { fetchConfluenceImageSnapshots, SNAPSHOT_FAILURE_MESSAGES } from "@/lib/confluence-snapshot";
 import {
+  extractConfluenceAdfImageReferences,
+  extractConfluenceHtmlImageReferences,
   extractConfluenceStorageImageReferences,
   normalizeConfluenceFilename,
   sanitizeConfluenceHtmlWithAttachments,
@@ -38,7 +42,7 @@ function atlassianFailure(status: number): SyncFailure {
   return { error: atlassianError(status), nextAction: "URLとページの閲覧権限を確認してください。", code: "ATLASSIAN_REQUEST_FAILED", status: 502 };
 }
 
-async function saveFailure(workspaceId: string, sceneId: string, failure: SyncFailure) {
+async function saveFailure(workspaceId: string, sceneId: string, failure: SyncFailure, extra: Record<string, unknown> = {}) {
   const database = db();
   await database.batch([
     database
@@ -49,7 +53,7 @@ async function saveFailure(workspaceId: string, sceneId: string, failure: SyncFa
       .bind(`${failure.code}: ${failure.error}`, sceneId, workspaceId),
   ]);
   return Response.json(
-    { error: failure.error, nextAction: failure.nextAction, code: failure.code },
+    { error: failure.error, nextAction: failure.nextAction, code: failure.code, ...extra },
     { status: failure.status },
   );
 }
@@ -153,74 +157,91 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       return Response.json({ hasUpdate, remoteVersion: page.version.number, savedVersion: source?.page_version ?? null });
     }
 
-    const storageResponse = await fetch(
-      `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}?body-format=storage`,
-      { headers: { authorization: `Bearer ${token}`, accept: "application/json" } },
-    );
+    const representationUrl = (format: string) =>
+      `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}?body-format=${format}`;
+    const [storageResponse, exportResponse, adfResponse] = await Promise.all([
+      fetch(representationUrl("storage"), { headers: { authorization: `Bearer ${token}`, accept: "application/json" } }),
+      fetch(representationUrl("export_view"), { headers: { authorization: `Bearer ${token}`, accept: "application/json" } }),
+      fetch(representationUrl("atlas_doc_format"), { headers: { authorization: `Bearer ${token}`, accept: "application/json" } }),
+    ]);
     if (!storageResponse.ok)
       return saveFailure(auth.membership.workspace_id, sceneId, atlassianFailure(storageResponse.status));
-    const storagePage = (await storageResponse.json()) as {
-      id: string;
-      body?: { storage?: { value?: string } };
-    };
+    const storagePage = await storageResponse.json() as { id: string; body?: { storage?: { value?: string } } };
     const storageHtml = storagePage.body?.storage?.value ?? "";
-
-    const warnings: string[] = [];
-    let attachments: ConfluenceAttachmentDescriptor[] = [];
-    let attachmentsFetched = false;
-    let attachmentPages = 0;
-    let rawAttachmentCount = 0;
-    let attachmentScopeGranted = connection.attachment_scope_granted ?? 0;
-    try {
-      const attachmentList = await fetchAllPageAttachments(connection.cloud_id, pageId, token);
-      if (attachmentList.ok) {
-        attachmentsFetched = true;
-        attachmentScopeGranted = 1;
-        attachments = attachmentList.attachments;
-        attachmentPages = attachmentList.pages;
-        rawAttachmentCount = attachmentList.rawCount;
-      } else if (attachmentList.code === "ATTACHMENT_REAUTH_REQUIRED") {
-        attachmentScopeGranted = 0;
-        await db().prepare("UPDATE confluence_connections SET attachment_scope_granted=0,last_error=?1 WHERE workspace_id=?2")
-          .bind("ATTACHMENT_REAUTH_REQUIRED: 画像権限の再承認が必要です", auth.membership.workspace_id).run();
-        return saveFailure(auth.membership.workspace_id, sceneId, {
-          error: "Confluence画像の権限を確認できませんでした。",
-          nextAction: "「Atlassianに再接続」を押し、画像の追加権限を許可してから再同期してください。",
-          code: "ATTACHMENT_REAUTH_REQUIRED",
-          status: 409,
-        });
-      } else {
-        warnings.push("本文は同期しましたが、添付画像の一覧を取得できませんでした。");
-      }
-    } catch {
-      warnings.push("本文は同期しましたが、添付画像の取得中に通信エラーが発生しました。");
+    const exportPage = exportResponse.ok ? await exportResponse.json() as { body?: { export_view?: { value?: string } } } : null;
+    const adfPage = adfResponse.ok ? await adfResponse.json() as { body?: { atlas_doc_format?: { value?: unknown } } } : null;
+    const viewHtml = page.body?.view?.value ?? "";
+    const exportHtml = exportPage?.body?.export_view?.value ?? "";
+    const snapshots = await fetchConfluenceImageSnapshots({
+      cloudId: connection.cloud_id,
+      cloudUrl: connection.cloud_url ?? "https://www.atlassian.com",
+      pageId,
+      token,
+      representations: [
+        extractConfluenceStorageImageReferences(storageHtml),
+        extractConfluenceHtmlImageReferences(viewHtml, connection.cloud_url ?? "https://www.atlassian.com"),
+        extractConfluenceHtmlImageReferences(exportHtml, connection.cloud_url ?? "https://www.atlassian.com"),
+        extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
+      ],
+    });
+    if (snapshots.failures.length) {
+      const counts = snapshots.failures.reduce<Record<string, number>>((result, code) => {
+        result[code] = (result[code] ?? 0) + 1; return result;
+      }, {});
+      const messages = Object.keys(counts).map((code) => `${SNAPSHOT_FAILURE_MESSAGES[code as keyof typeof SNAPSHOT_FAILURE_MESSAGES]}（${counts[code]}件）`);
+      const scopeMissing = snapshots.failures.includes("scope_missing");
+      return saveFailure(auth.membership.workspace_id, sceneId, {
+        error: `画像を安全に内部保存できなかったため、前回の同期結果を保持しました。${messages.join(" ")}`,
+        nextAction: scopeMissing ? "「Atlassianに再接続」を押して画像権限を許可し、再同期してください。" : "対象画像を確認してから再同期してください。",
+        code: scopeMissing ? "ATTACHMENT_REAUTH_REQUIRED" : "IMAGE_SNAPSHOT_FAILED",
+        status: scopeMissing ? 409 : 422,
+      }, { assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });
     }
 
-    const proxyPrefix = `/api/workspaces/${encodeURIComponent(slug)}/confluence/scenes/${encodeURIComponent(sceneId)}/pages/${encodeURIComponent(pageId)}/attachments`;
+    const generation = crypto.randomUUID();
+    await stageSceneAssets({
+      workspaceId: auth.membership.workspace_id,
+      sceneId,
+      pageId,
+      generation,
+      assets: snapshots.assets.map(({ assetKey, filename, mime, bytes, sha256 }) => ({ assetKey, filename, mime, bytes, sha256 })),
+    });
+    const proxyPrefix = `/api/workspaces/${encodeURIComponent(auth.membership.workspace_id)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
     const rendered = sanitizeConfluenceHtmlWithAttachments(
-      page.body?.view?.value ?? page.body?.storage?.value ?? "",
+      viewHtml || exportHtml || storageHtml,
       connection.cloud_url ?? "https://www.atlassian.com",
-      attachments,
+      snapshots.assets.map((asset) => ({
+        id: asset.assetKey,
+        title: asset.filename,
+        fileName: asset.filename,
+        fileId: asset.reference.fileId,
+        pageId,
+        mediaType: asset.mime,
+        fileSize: asset.bytes.byteLength,
+        downloadLink: asset.reference.sourceUrl ?? `/wiki/download/attachments/${pageId}/${encodeURIComponent(asset.filename)}`,
+      } satisfies ConfluenceAttachmentDescriptor)),
       proxyPrefix,
       storageHtml,
     );
-    if (rendered.missingImages > 0 && warnings.length === 0)
-      warnings.push(`${rendered.missingImages}件の画像を添付情報と照合できなかったため、日本語の代替表示にしました。`);
+    if (rendered.missingImages > 0) {
+      await discardSceneAssetGeneration(auth.membership.workspace_id, sceneId, generation);
+      return saveFailure(auth.membership.workspace_id, sceneId, {
+        error: "画像の内部保存には成功しましたが、本文への安全な埋め込みに失敗したため前回の同期結果を保持しました。",
+        nextAction: "時間をおいて再同期してください。",
+        code: "IMAGE_REWRITE_FAILED",
+        status: 422,
+      }, { assets: { saved: 0, failed: rendered.missingImages } });
+    }
     const storageReferences = extractConfluenceStorageImageReferences(storageHtml);
     console.info("CONFLUENCE_SYNC_DIAGNOSTIC", {
-      attachmentStatus: attachmentsFetched ? 200 : "failed",
-      attachmentPages,
-      rawAttachmentCount,
-      attachmentCount: attachments.length,
-      bodyRepresentations: [page.body?.view?.value ? "view" : "", storageHtml ? "storage" : ""].filter(Boolean),
+      assetSnapshotStatus: 200,
+      assetCount: snapshots.assets.length,
+      bodyRepresentations: [viewHtml ? "view" : "", storageHtml ? "storage" : "", exportHtml ? "export_view" : "", adfPage ? "atlas_doc_format" : ""].filter(Boolean),
       viewImageCount: rendered.imageReferences,
       storageImageCount: storageReferences.length,
       matchedImageCount: rendered.matchedImages,
       missingImageCount: rendered.missingImages,
-      normalizedFilenameHashes: await diagnosticHashes([
-        ...storageReferences.map((item) => item.filename),
-        ...attachments.flatMap((item) => [item.title, item.fileName ?? ""]),
-      ]),
+      normalizedFilenameHashes: await diagnosticHashes(storageReferences.map((item) => item.filename)),
     });
     const pageUrl = parsed.originalUrl ?? (page._links?.webui ? new URL(page._links.webui, connection.cloud_url).toString() : connection.cloud_url);
     const syncedAt = new Date().toISOString();
@@ -228,35 +249,29 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     const statements = [
       database
         .prepare(`INSERT INTO scene_confluence_sources
-          (scene_id,workspace_id,page_id,page_url,page_title,page_version,synced_html,last_synced_at,last_checked_at,last_error)
-          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9)
+          (scene_id,workspace_id,page_id,page_url,page_title,page_version,synced_html,last_synced_at,last_checked_at,last_error,asset_generation)
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,NULL,?9)
           ON CONFLICT(scene_id) DO UPDATE SET page_id=excluded.page_id,page_url=excluded.page_url,
           page_title=excluded.page_title,page_version=excluded.page_version,synced_html=excluded.synced_html,
           last_synced_at=excluded.last_synced_at,last_checked_at=excluded.last_checked_at,
-          last_error=excluded.last_error,updated_at=CURRENT_TIMESTAMP`)
-        .bind(sceneId, auth.membership.workspace_id, page.id, pageUrl, page.title, page.version.number, rendered.html, syncedAt, warnings[0] ?? null),
+          last_error=NULL,asset_generation=excluded.asset_generation,updated_at=CURRENT_TIMESTAMP`)
+        .bind(sceneId, auth.membership.workspace_id, page.id, pageUrl, page.title, page.version.number, rendered.html, syncedAt, generation),
       database
         .prepare("UPDATE scenes SET confluence_page_url=?1 WHERE id=?2 AND workspace_id=?3")
         .bind(pageUrl, sceneId, auth.membership.workspace_id),
       database
-        .prepare("UPDATE confluence_connections SET attachment_scope_granted=?1,last_error=?2 WHERE workspace_id=?3")
-        .bind(attachmentScopeGranted, warnings[0] ?? null, auth.membership.workspace_id),
+        .prepare("UPDATE confluence_connections SET attachment_scope_granted=1,last_error=NULL WHERE workspace_id=?1")
+        .bind(auth.membership.workspace_id),
+      database
+        .prepare("DELETE FROM scene_confluence_assets WHERE workspace_id=?1 AND scene_id=?2 AND generation<>?3")
+        .bind(auth.membership.workspace_id, sceneId, generation),
     ];
-    if (attachmentsFetched) {
-      statements.push(
-        database
-          .prepare("DELETE FROM scene_confluence_attachments WHERE scene_id=?1 AND workspace_id=?2")
-          .bind(sceneId, auth.membership.workspace_id),
-        ...rendered.safeAttachments.map((item) =>
-          database
-            .prepare(`INSERT INTO scene_confluence_attachments
-              (scene_id,workspace_id,page_id,attachment_id,filename,media_type,file_size,download_path)
-              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)`)
-            .bind(sceneId, auth.membership.workspace_id, pageId, item.id, item.title, item.mediaType.toLowerCase(), item.fileSize, item.downloadLink),
-        ),
-      );
+    try {
+      await database.batch(statements);
+    } catch (error) {
+      await discardSceneAssetGeneration(auth.membership.workspace_id, sceneId, generation);
+      throw error;
     }
-    await database.batch(statements);
     const sceneSource = {
       scene_id: sceneId,
       page_id: page.id,
@@ -266,9 +281,9 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       synced_html: rendered.html,
       last_synced_at: syncedAt,
       last_checked_at: syncedAt,
-      last_error: warnings[0] ?? null,
+      last_error: null,
     };
-    return Response.json({ message: "同期しました", warnings, source: sceneSource });
+    return Response.json({ message: "同期しました", warnings: [], assets: { saved: snapshots.assets.length, failed: 0 }, source: sceneSource });
   } catch (error) {
     const reauth = error instanceof Error && error.message === "Confluenceの再認証が必要です";
     return saveFailure(

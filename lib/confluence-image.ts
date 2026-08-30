@@ -9,11 +9,13 @@ export function isAllowedAtlassianDownloadUrl(value: string) {
   try {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
+    const isIpLiteral = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(":");
     return (
       url.protocol === "https:" &&
       !url.username &&
       !url.password &&
       !url.port &&
+      !isIpLiteral &&
       (host === "api.atlassian.com" ||
         host.endsWith(".atlassian.com") ||
         host.endsWith(".atlassian.net") ||
@@ -22,6 +24,32 @@ export function isAllowedAtlassianDownloadUrl(value: string) {
   } catch {
     return false;
   }
+}
+
+export function validateConfluenceImageSource(
+  value: string,
+  cloudUrl: string,
+  cloudId: string,
+  pageId: string,
+) {
+  try {
+    const url = new URL(value, cloudUrl);
+    if (!isAllowedAtlassianDownloadUrl(url.toString())) return null;
+    const tenantHost = new URL(cloudUrl).hostname.toLowerCase();
+    const gatewayPrefix = `/ex/confluence/${encodeURIComponent(cloudId)}/`;
+    const downloadPattern = new RegExp(`/wiki/download/attachments/${pageId}(?:/|$)`, "i");
+    if (url.hostname.toLowerCase() === tenantHost && downloadPattern.test(url.pathname)) {
+      return new URL(`${gatewayPrefix.replace(/\/$/, "")}${url.pathname}${url.search}`, "https://api.atlassian.com").toString();
+    }
+    if (url.hostname === "api.atlassian.com"
+      && url.pathname.startsWith(gatewayPrefix)
+      && downloadPattern.test(url.pathname)) return url.toString();
+    if ((url.hostname === "api.media.atlassian.com"
+      || url.hostname === "media.atlassian.com"
+      || url.hostname.endsWith(".atl-paas.net"))
+      && !url.pathname.includes("..")) return url.toString();
+    return null;
+  } catch { return null; }
 }
 
 export type AttachmentBinaryResult =

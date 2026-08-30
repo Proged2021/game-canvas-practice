@@ -154,6 +154,9 @@ export async function DELETE(
   if (!scene) return Response.json({ error: "場面が見つかりません" }, { status: 404 });
   await database.batch([
     database
+      .prepare("DELETE FROM scene_confluence_assets WHERE scene_id=?1 AND workspace_id=?2")
+      .bind(body.id, auth.membership.workspace_id),
+    database
       .prepare("DELETE FROM scene_confluence_attachments WHERE scene_id=?1 AND workspace_id=?2")
       .bind(body.id, auth.membership.workspace_id),
     database

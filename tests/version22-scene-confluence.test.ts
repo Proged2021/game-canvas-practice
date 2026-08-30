@@ -92,18 +92,15 @@ test("同期・取得・削除・画像proxyはworkspaceとsceneの組を強制�
   const [sync, source, proxy, scenes] = await Promise.all([
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"),
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/route.ts"),
-    read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/pages/[pageId]/attachments/[attachmentId]/route.ts"),
+    read("app/api/workspaces/[slug]/scenes/[sceneId]/confluence/assets/[assetKey]/route.ts"),
     read("app/api/workspaces/[slug]/scenes/route.ts"),
   ]);
   assert.match(sync, /body\.sceneId/);
   assert.match(sync, /INSERT INTO scene_confluence_sources/);
-  assert.match(sync, /confluence\/scenes\/\$\{encodeURIComponent\(sceneId\)\}/);
+  assert.match(sync, /scenes\/\$\{encodeURIComponent\(sceneId\)\}\/confluence\/assets/);
   assert.match(source, /scene_id=\?1 AND workspace_id=\?2/);
-  assert.match(proxy, /a\.workspace_id=\?1 AND a\.scene_id=\?2 AND a\.page_id=\?3 AND a\.attachment_id=\?4/);
-  assert.match(proxy, /"content-type": binary\.mediaType/);
-  assert.match(proxy, /"content-disposition": "inline"/);
-  assert.match(proxy, /"x-content-type-options": "nosniff"/);
-  assert.match(proxy, /"cache-control": "private, max-age=300"/);
+  assert.match(proxy, /a\.asset_key=\?1 AND a\.workspace_id=\?2 AND a\.scene_id=\?3/);
+  assert.match(proxy, /createStoredAssetResponse/);
   assert.match(scenes, /DELETE FROM scene_confluence_sources WHERE scene_id=\?1 AND workspace_id=\?2/);
   assert.doesNotMatch(source, /DELETE FROM confluence_connections/);
 });

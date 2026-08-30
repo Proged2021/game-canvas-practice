@@ -21,6 +21,47 @@ type AttachmentPage = {
   _links?: { next?: string };
 };
 
+function normalizeAttachment(item: RawAttachment, pageId: string) {
+  const id = item.id == null ? "" : String(item.id);
+  const mediaType = typeof item.mediaType === "string" ? item.mediaType.toLowerCase() : "";
+  const downloadLink = item.downloadLink ?? item._links?.download ?? "";
+  const title = item.title ?? item.fileName ?? item.filename ?? "";
+  const listedPageId = item.pageId == null ? pageId : String(item.pageId);
+  if (!id || listedPageId !== pageId || downloadLink.startsWith("//")) return null;
+  if (downloadLink && !/^https:\/\//i.test(downloadLink) && !/^\/(?:wiki\/)?download\/attachments\//i.test(downloadLink)) return null;
+  return {
+    id,
+    title,
+    fileName: item.fileName ?? item.filename,
+    fileId: item.fileId,
+    pageId,
+    mediaType,
+    fileSize: Number(item.fileSize),
+    downloadLink,
+  } satisfies ConfluenceAttachmentDescriptor;
+}
+
+export async function searchPageAttachmentsByFilename(
+  cloudId: string,
+  pageId: string,
+  filename: string,
+  token: string,
+  fetcher: typeof fetch = fetch,
+) {
+  const url = `https://api.atlassian.com/ex/confluence/${encodeURIComponent(cloudId)}/wiki/api/v2/pages/${encodeURIComponent(pageId)}/attachments?filename=${encodeURIComponent(filename)}&limit=100`;
+  const response = await fetcher(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+  if (response.status === 401 || response.status === 403)
+    return { ok: false as const, status: response.status, code: "ATTACHMENT_REAUTH_REQUIRED" as const };
+  if (!response.ok) return { ok: false as const, status: response.status, code: "ATTACHMENT_LIST_FAILED" as const };
+  const body = await response.json() as AttachmentPage;
+  return {
+    ok: true as const,
+    attachments: (Array.isArray(body.results) ? body.results : [])
+      .map((item) => normalizeAttachment(item, pageId))
+      .filter((item): item is ConfluenceAttachmentDescriptor => Boolean(item)),
+  };
+}
+
 export type AttachmentListResult =
   | {
       ok: true;
@@ -82,23 +123,8 @@ export async function fetchAllPageAttachments(
     const results = Array.isArray(body.results) ? body.results : [];
     rawCount += results.length;
     for (const item of results) {
-      const id = item.id == null ? "" : String(item.id);
-      const mediaType = typeof item.mediaType === "string" ? item.mediaType.toLowerCase() : "";
-      const downloadLink = item.downloadLink ?? item._links?.download ?? "";
-      const title = item.title ?? item.fileName ?? item.filename ?? "";
-      const listedPageId = item.pageId == null ? pageId : String(item.pageId);
-      if (!id || listedPageId !== pageId || !downloadLink || downloadLink.startsWith("//")) continue;
-      if (!/^https:\/\//i.test(downloadLink) && !/^\/(?:wiki\/)?download\/attachments\//i.test(downloadLink)) continue;
-      attachments.push({
-        id,
-        title,
-        fileName: item.fileName ?? item.filename,
-        fileId: item.fileId,
-        pageId,
-        mediaType,
-        fileSize: Number(item.fileSize),
-        downloadLink,
-      });
+      const normalized = normalizeAttachment(item, pageId);
+      if (normalized) attachments.push(normalized);
     }
     const next = body._links?.next ?? nextFromLinkHeader(response.headers.get("link"));
     if (!next) return { ok: true, attachments, pages, rawCount };

@@ -138,8 +138,8 @@ test("同期はviewとstorageを取得し再認証を明示、UIは接続済み�
     read("drizzle/0007_rainy_sebastian_shaw.sql"),
   ]);
   assert.match(sync, /body-format=view/);
-  assert.match(sync, /body-format=storage/);
-  assert.match(sync, /fetchAllPageAttachments/);
+  assert.match(sync, /representationUrl\("storage"\)/);
+  assert.match(sync, /fetchConfluenceImageSnapshots/);
   assert.match(sync, /ATTACHMENT_REAUTH_REQUIRED/);
   assert.match(sync, /normalizedFilenameHashes/);
   assert.doesNotMatch(sync, /console\.(?:info|warn|error)[^\n]*filename/i);
