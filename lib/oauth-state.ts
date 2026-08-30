@@ -1,6 +1,7 @@
 export type OAuthStateRecord = {
   workspace_id: string;
   user_email: string;
+  scene_id?: string | null;
   expires_at: string;
 };
 

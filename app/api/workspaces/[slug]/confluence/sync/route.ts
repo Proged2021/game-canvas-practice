@@ -8,6 +8,11 @@ import {
   resolveConfluenceShortUrl,
 } from "@/lib/confluence";
 import {
+  fetchAllPageAttachments,
+} from "@/lib/confluence-attachments";
+import {
+  extractConfluenceStorageImageReferences,
+  normalizeConfluenceFilename,
   sanitizeConfluenceHtmlWithAttachments,
   type ConfluenceAttachmentDescriptor,
 } from "@/lib/confluence-safe";
@@ -47,6 +52,14 @@ async function saveFailure(workspaceId: string, sceneId: string, failure: SyncFa
     { error: failure.error, nextAction: failure.nextAction, code: failure.code },
     { status: failure.status },
   );
+}
+
+async function diagnosticHashes(values: string[]) {
+  const unique = [...new Set(values.map(normalizeConfluenceFilename).filter(Boolean))].slice(0, 20);
+  return Promise.all(unique.map(async (value) => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest).slice(0, 4), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }));
 }
 
 async function run(request: Request, slug: string, checkOnly: boolean) {
@@ -140,47 +153,42 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       return Response.json({ hasUpdate, remoteVersion: page.version.number, savedVersion: source?.page_version ?? null });
     }
 
+    const storageResponse = await fetch(
+      `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}?body-format=storage`,
+      { headers: { authorization: `Bearer ${token}`, accept: "application/json" } },
+    );
+    if (!storageResponse.ok)
+      return saveFailure(auth.membership.workspace_id, sceneId, atlassianFailure(storageResponse.status));
+    const storagePage = (await storageResponse.json()) as {
+      id: string;
+      body?: { storage?: { value?: string } };
+    };
+    const storageHtml = storagePage.body?.storage?.value ?? "";
+
     const warnings: string[] = [];
     let attachments: ConfluenceAttachmentDescriptor[] = [];
     let attachmentsFetched = false;
+    let attachmentPages = 0;
+    let rawAttachmentCount = 0;
     let attachmentScopeGranted = connection.attachment_scope_granted ?? 0;
     try {
-      const attachmentsResponse = await fetch(
-        `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}/attachments?limit=250`,
-        { headers: { authorization: `Bearer ${token}`, accept: "application/json" } },
-      );
-      if (attachmentsResponse.ok) {
+      const attachmentList = await fetchAllPageAttachments(connection.cloud_id, pageId, token);
+      if (attachmentList.ok) {
         attachmentsFetched = true;
         attachmentScopeGranted = 1;
-        const attachmentBody = (await attachmentsResponse.json()) as {
-          results?: Array<{
-            id: string;
-            title: string;
-            pageId: string;
-            mediaType: string;
-            fileSize: number;
-            downloadLink?: string;
-            _links?: { download?: string };
-          }>;
-        };
-        attachments = (attachmentBody.results ?? [])
-          .map((item) => ({
-            id: item.id,
-            title: item.title,
-            pageId: String(item.pageId),
-            mediaType: item.mediaType,
-            fileSize: item.fileSize,
-            downloadLink: item.downloadLink ?? item._links?.download ?? "",
-          }))
-          .filter(
-            (item) =>
-              item.pageId === pageId &&
-              (/^\/(?:wiki\/)?download\/attachments\//i.test(item.downloadLink) || /^https:\/\//i.test(item.downloadLink)) &&
-              !item.downloadLink.startsWith("//"),
-          );
-      } else if (attachmentsResponse.status === 401 || attachmentsResponse.status === 403) {
+        attachments = attachmentList.attachments;
+        attachmentPages = attachmentList.pages;
+        rawAttachmentCount = attachmentList.rawCount;
+      } else if (attachmentList.code === "ATTACHMENT_REAUTH_REQUIRED") {
         attachmentScopeGranted = 0;
-        warnings.push("画像を表示するには、Atlassianの追加権限を許可して再接続してください。");
+        await db().prepare("UPDATE confluence_connections SET attachment_scope_granted=0,last_error=?1 WHERE workspace_id=?2")
+          .bind("ATTACHMENT_REAUTH_REQUIRED: 画像権限の再承認が必要です", auth.membership.workspace_id).run();
+        return saveFailure(auth.membership.workspace_id, sceneId, {
+          error: "Confluence画像の権限を確認できませんでした。",
+          nextAction: "「Atlassianに再接続」を押し、画像の追加権限を許可してから再同期してください。",
+          code: "ATTACHMENT_REAUTH_REQUIRED",
+          status: 409,
+        });
       } else {
         warnings.push("本文は同期しましたが、添付画像の一覧を取得できませんでした。");
       }
@@ -194,9 +202,26 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       connection.cloud_url ?? "https://www.atlassian.com",
       attachments,
       proxyPrefix,
+      storageHtml,
     );
     if (rendered.missingImages > 0 && warnings.length === 0)
       warnings.push(`${rendered.missingImages}件の画像を添付情報と照合できなかったため、日本語の代替表示にしました。`);
+    const storageReferences = extractConfluenceStorageImageReferences(storageHtml);
+    console.info("CONFLUENCE_SYNC_DIAGNOSTIC", {
+      attachmentStatus: attachmentsFetched ? 200 : "failed",
+      attachmentPages,
+      rawAttachmentCount,
+      attachmentCount: attachments.length,
+      bodyRepresentations: [page.body?.view?.value ? "view" : "", storageHtml ? "storage" : ""].filter(Boolean),
+      viewImageCount: rendered.imageReferences,
+      storageImageCount: storageReferences.length,
+      matchedImageCount: rendered.matchedImages,
+      missingImageCount: rendered.missingImages,
+      normalizedFilenameHashes: await diagnosticHashes([
+        ...storageReferences.map((item) => item.filename),
+        ...attachments.flatMap((item) => [item.title, item.fileName ?? ""]),
+      ]),
+    });
     const pageUrl = parsed.originalUrl ?? (page._links?.webui ? new URL(page._links.webui, connection.cloud_url).toString() : connection.cloud_url);
     const syncedAt = new Date().toISOString();
     const database = db();

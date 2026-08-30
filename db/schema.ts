@@ -168,6 +168,7 @@ export const oauthStates = sqliteTable("oauth_states", {
     .notNull()
     .references(() => workspaces.id, { onDelete: "cascade" }),
   userEmail: text("user_email").notNull(),
+  sceneId: text("scene_id").references(() => scenes.id, { onDelete: "cascade" }),
   expiresAt: text("expires_at").notNull(),
   createdAt: text("created_at")
     .notNull()

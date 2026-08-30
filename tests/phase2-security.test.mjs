@@ -29,7 +29,8 @@ test("OAuth starts from a native new-tab link instead of an embedded-frame navig
   const urls = await read("lib/site-urls.ts");
   assert.match(client, /import \{ CONFLUENCE_CALLBACK_URL, SITE_ORIGIN \} from "@\/lib\/site-urls"/);
   assert.match(urls, /https:\/\/game-canvas\.app/);
-  assert.match(client, /authStartUrl = `\$\{SITE_ORIGIN\}\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start`/);
+  assert.match(client, /authStartUrl = `\$\{SITE_ORIGIN\}\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start/);
+  assert.match(client, /sceneId=\$\{encodeURIComponent\(sceneId\)\}/);
   assert.match(client, /href=\{authStartUrl\}/);
   assert.match(client, /target="_blank"/);
   assert.match(client, /rel="noopener noreferrer"/);

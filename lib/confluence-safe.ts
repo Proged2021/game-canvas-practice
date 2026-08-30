@@ -128,39 +128,125 @@ export const MAX_CONFLUENCE_IMAGE_BYTES = 10 * 1024 * 1024;
 export type ConfluenceAttachmentDescriptor = {
   id: string;
   title: string;
+  fileName?: string;
+  fileId?: string;
   pageId: string;
   mediaType: string;
   fileSize: number;
   downloadLink: string;
 };
 
-function normalizedFilename(value: string) {
-  try { return decodeURIComponent(value).normalize("NFKC").toLocaleLowerCase("en-US"); }
-  catch { return value.normalize("NFKC").toLocaleLowerCase("en-US"); }
+function decodeHtmlEntities(value: string) {
+  const named: Record<string, string> = {
+    amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " ",
+  };
+  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, entity: string) => {
+    if (entity[0] !== "#") return named[entity.toLowerCase()] ?? whole;
+    const point = entity[1].toLowerCase() === "x"
+      ? Number.parseInt(entity.slice(2), 16)
+      : Number.parseInt(entity.slice(1), 10);
+    try { return Number.isFinite(point) ? String.fromCodePoint(point) : whole; }
+    catch { return whole; }
+  });
+}
+
+function repeatedlyDecodeURIComponent(value: string) {
+  let current = value;
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) break;
+      current = decoded;
+    } catch { break; }
+  }
+  return current;
+}
+
+export function normalizeConfluenceFilename(value: string) {
+  return repeatedlyDecodeURIComponent(decodeHtmlEntities(value.trim()))
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US");
 }
 
 function sourceFilename(source: string) {
   try {
-    const url = new URL(source);
+    const url = new URL(source, "https://confluence.invalid");
     const explicit = url.searchParams.get("filename") ?? url.searchParams.get("fileName");
-    if (explicit) return normalizedFilename(explicit);
+    if (explicit) return normalizeConfluenceFilename(explicit);
     const pathname = url.pathname;
     const filename = pathname.split("/").filter(Boolean).at(-1) ?? "";
-    return normalizedFilename(filename);
+    return normalizeConfluenceFilename(filename);
   } catch { return ""; }
+}
+
+function attributeValue(attributes: string, localName: string) {
+  const escaped = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = attributes.match(new RegExp(`(?:[\\w.-]+:)?${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
+  return match ? decodeHtmlEntities(match[1] ?? match[2] ?? "") : "";
+}
+
+export type ConfluenceImageReference = {
+  filename: string;
+  normalizedFilename: string;
+  attachmentId?: string;
+  fileId?: string;
+};
+
+export function extractConfluenceStorageImageReferences(storageHtml: string) {
+  const references: ConfluenceImageReference[] = [];
+  const imagePattern = /<(?:[\w.-]+:)?image\b([^>]*)>([\s\S]*?)<\/(?:[\w.-]+:)?image\s*>/gi;
+  for (const imageMatch of storageHtml.matchAll(imagePattern)) {
+    const inner = imageMatch[2];
+    const attachment = inner.match(/<(?:[\w.-]+:)?attachment\b([^>]*)\/?\s*>/i);
+    if (!attachment) continue;
+    const filename = attributeValue(attachment[1], "filename");
+    if (!filename) continue;
+    references.push({
+      filename,
+      normalizedFilename: normalizeConfluenceFilename(filename),
+      attachmentId: attributeValue(attachment[1], "attachment-id") || undefined,
+      fileId: attributeValue(attachment[1], "file-id") || undefined,
+    });
+  }
+  return references;
 }
 
 function storageImagesToViewHtml(html: string, baseUrl: string, pageId: string) {
   return html.replace(
-    /<ac:image\b([^>]*)>[\s\S]*?<ri:attachment\b[^>]*ri:filename=(?:"([^"]+)"|'([^']+)')[^>]*\/?>(?:[\s\S]*?<\/ac:image>)?/gi,
-    (_whole, imageAttributes: string, doubleQuoted: string, singleQuoted: string) => {
-      const filename = doubleQuoted ?? singleQuoted ?? "";
-      const width = imageAttributes.match(/ac:width=(?:"(\d+)"|'(\d+)')/i)?.slice(1).find(Boolean);
-      const height = imageAttributes.match(/ac:height=(?:"(\d+)"|'(\d+)')/i)?.slice(1).find(Boolean);
+    /<(?:[\w.-]+:)?image\b([^>]*)>([\s\S]*?)<\/(?:[\w.-]+:)?image\s*>/gi,
+    (whole, imageAttributes: string, inner: string) => {
+      const attachment = inner.match(/<(?:[\w.-]+:)?attachment\b([^>]*)\/?\s*>/i);
+      if (!attachment) return whole;
+      const filename = attributeValue(attachment[1], "filename");
+      if (!filename) return whole;
+      const width = attributeValue(imageAttributes, "width").match(/^\d+$/)?.[0];
+      const height = attributeValue(imageAttributes, "height").match(/^\d+$/)?.[0];
+      const attachmentId = attributeValue(attachment[1], "attachment-id");
       const source = new URL(`/wiki/download/attachments/${pageId}/${encodeURIComponent(filename)}`, baseUrl).toString();
-      return `<img src="${source}" alt="${filename.replace(/[&<>"']/g, "")}"${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""}>`;
+      const safeAlt = filename.replace(/[&<>"']/g, "");
+      return `<img src="${source}" alt="${safeAlt}"${attachmentId ? ` data-attachment-id="${attachmentId.replace(/[^A-Za-z0-9_-]/g, "")}"` : ""}${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""}>`;
     },
   );
+}
+
+function sourcePageId(source: string) {
+  try { return new URL(source).pathname.match(/\/(?:wiki\/)?download\/attachments\/(\d{1,30})(?:\/|$)/i)?.[1] ?? ""; }
+  catch { return ""; }
+}
+
+function sourceTokens(source: string) {
+  try {
+    const url = new URL(source);
+    return new Set([
+      ...url.pathname.split("/").filter(Boolean),
+      ...url.searchParams.values(),
+    ].map((value) => repeatedlyDecodeURIComponent(value)));
+  } catch { return new Set<string>(); }
+}
+
+function attachmentNames(item: ConfluenceAttachmentDescriptor) {
+  const values = [item.title, item.fileName, sourceFilename(item.downloadLink)];
+  return new Set(values.filter(Boolean).map(normalizeConfluenceFilename));
 }
 
 export function sanitizeConfluenceHtmlWithAttachments(
@@ -168,6 +254,7 @@ export function sanitizeConfluenceHtmlWithAttachments(
   baseUrl: string,
   attachments: ConfluenceAttachmentDescriptor[],
   proxyPrefix: string,
+  storageHtml = "",
 ) {
   const safeAttachments = attachments.filter((item) =>
     SAFE_IMAGE_MEDIA_TYPES.has(item.mediaType.toLowerCase())
@@ -177,20 +264,39 @@ export function sanitizeConfluenceHtmlWithAttachments(
   );
   let missingImages = 0;
   const pageId = safeAttachments[0]?.pageId ?? attachments[0]?.pageId ?? "";
+  const storageReferences = extractConfluenceStorageImageReferences(storageHtml || html);
   const normalizedHtml = pageId ? storageImagesToViewHtml(html, baseUrl, pageId) : html;
+  let imageIndex = 0;
+  let matchedImages = 0;
   const sanitizedHtml = sanitizeConfluenceHtml(normalizedHtml, baseUrl, (source, attributes) => {
+    const storageReference = storageReferences[imageIndex++];
     const filename = sourceFilename(source);
     let attachmentId = "";
     try { attachmentId = new URL(source).searchParams.get("attachmentId") ?? ""; } catch { /* invalid source */ }
-    const attributeFilename = normalizedFilename(attributes.alt || attributes.title || "");
+    attachmentId ||= attributes["data-attachment-id"] ?? attributes["data-linked-resource-id"] ?? "";
+    const attributeFilename = normalizeConfluenceFilename(
+      attributes["data-linked-resource-default-alias"] || attributes.alt || attributes.title || "",
+    );
+    const tokens = sourceTokens(source);
+    const referencedPageId = sourcePageId(source);
     const match = safeAttachments.find((item) => {
-      const title = normalizedFilename(item.title);
-      return item.id === attachmentId || title === filename || Boolean(attributeFilename && title === attributeFilename);
+      const names = attachmentNames(item);
+      return item.id === attachmentId
+        || Boolean(item.fileId && (tokens.has(item.fileId) || item.fileId === attributes["data-media-id"]))
+        || Boolean(filename && names.has(filename))
+        || Boolean(attributeFilename && names.has(attributeFilename))
+        || Boolean(storageReference && (
+          item.id === storageReference.attachmentId
+          || item.fileId === storageReference.fileId
+          || names.has(storageReference.normalizedFilename)
+        ))
+        || Boolean(referencedPageId === item.pageId && names.has(filename));
     });
     if (!match) { missingImages += 1; return null; }
+    matchedImages += 1;
     return `${proxyPrefix}/${encodeURIComponent(match.id)}`;
   });
-  return { html: sanitizedHtml, missingImages, safeAttachments };
+  return { html: sanitizedHtml, missingImages, matchedImages, imageReferences: imageIndex, safeAttachments };
 }
 
 export function atlassianError(status: number) {

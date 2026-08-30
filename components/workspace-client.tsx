@@ -98,9 +98,9 @@ const CONFLUENCE_STATUS_LABELS: Record<ConfluenceStatus["state"], string> = {
   connected: "接続済み",
   reauth_required: "再認証が必要",
 };
-function ConfluenceConnectLink({ slug, configured }: { slug: string; configured?: boolean }) {
+function ConfluenceConnectLink({ slug, sceneId, configured }: { slug: string; sceneId?: string; configured?: boolean }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const authStartUrl = `${SITE_ORIGIN}/api/workspaces/${encodeURIComponent(slug)}/confluence/start`;
+  const authStartUrl = `${SITE_ORIGIN}/api/workspaces/${encodeURIComponent(slug)}/confluence/start${sceneId ? `?sceneId=${encodeURIComponent(sceneId)}` : ""}`;
   async function copyAuthLink() {
     try {
       if (!navigator.clipboard) throw new Error("clipboard unavailable");
@@ -154,12 +154,14 @@ export type WorkspaceData = {
 export function WorkspaceClient({
   slug,
   initialData,
+  initialSceneId,
 }: {
   slug: string;
   initialData: WorkspaceData;
+  initialSceneId?: string;
 }) {
   const [data, setData] = useState<WorkspaceData | null>(initialData),
-    [selectedId, setSelectedId] = useState(initialData.scenes[0]?.id ?? ""),
+    [selectedId, setSelectedId] = useState(initialSceneId ?? initialData.scenes[0]?.id ?? ""),
     [editMode, setEditMode] = useState(true);
   const [saveState, setSaveState] = useState<
       "saved" | "saving" | "dirty" | "conflict" | "error"
@@ -171,7 +173,7 @@ export function WorkspaceClient({
     [inviteError, setInviteError] = useState(""),
     [inviteUrl, setInviteUrl] = useState(""),
     [pageInput, setPageInput] = useState(
-      initialData.scenes[0]?.confluence_page_url ?? "",
+      initialData.scenes.find((scene) => scene.id === initialSceneId)?.confluence_page_url ?? initialData.scenes[0]?.confluence_page_url ?? "",
     ),
     [syncing, setSyncing] = useState(false);
   const [sceneSource, setSceneSource] = useState<SceneConfluenceSource | null>(null);
@@ -269,7 +271,13 @@ export function WorkspaceClient({
       "no-resource": "読み取り可能なConfluenceサイトが見つかりません",
       failed: "Confluence接続を完了できませんでした",
     };
-    if (result && messages[result]) queueMicrotask(() => setError(messages[result]));
+    if (result && messages[result]) queueMicrotask(() => {
+      setError(messages[result]);
+      if (result === "connected") {
+        setConfluenceDialogOpen(true);
+        setSyncFeedback({ type: "success", message: "Atlassianへ再接続しました。続けて「同期する」を押してください。" });
+      }
+    });
   }, [slug]);
   useEffect(() => {
     if (!data?.confluence?.connected || !active?.id || !sceneSource) return;
@@ -981,6 +989,7 @@ export function WorkspaceClient({
                               <p>最初にワークスペースをAtlassianへ接続してください。</p>
                               <ConfluenceConnectLink
                                 slug={slug}
+                                sceneId={active.id}
                                 configured={confluenceStatus?.configured}
                               />
                               {!confluenceStatus?.configured && (
@@ -1000,17 +1009,25 @@ export function WorkspaceClient({
                           )
                         ) : (
                           <>
-                            {confluenceStatus?.state === "reauth_required" && (
+                            {data.workspace.role === "owner" && (
                               <div className="scene-reauthentication">
-                                <p className="form-error">
-                                  画像を表示するには、Atlassianの追加権限を許可して再接続してください。
+                                <p className={confluenceStatus?.state === "reauth_required" ? "form-error" : undefined}>
+                                  {confluenceStatus?.state === "reauth_required"
+                                    ? "画像を表示するには、Atlassianの追加権限を許可して再接続してください。"
+                                    : "権限を更新する場合は、Atlassianへ再接続できます。"}
                                 </p>
-                                {data.workspace.role === "owner" && (
-                                  <ConfluenceConnectLink
-                                    slug={slug}
-                                    configured={confluenceStatus.configured}
-                                  />
-                                )}
+                                <ConfluenceConnectLink
+                                  slug={slug}
+                                  sceneId={active.id}
+                                  configured={confluenceStatus?.configured}
+                                />
+                              </div>
+                            )}
+                            {confluenceStatus?.state === "reauth_required" && (
+                              data.workspace.role !== "owner" && <div className="scene-reauthentication">
+                                <p className="form-error">
+                                  画像権限の再承認が必要です。ワークスペースのオーナーへ連絡してください。
+                                </p>
                               </div>
                             )}
                             <label htmlFor="scene-confluence-page">
