@@ -40,7 +40,7 @@ export async function POST(
         title,
         confluencePageUrl,
         position?.value ?? 0,
-        auth.user.email,
+        `account:${auth.user.accountKey}`,
       )
       .run();
     return Response.json(
@@ -52,7 +52,7 @@ export async function POST(
           markdown: "",
           position: position?.value ?? 0,
           revision: 1,
-          updated_by: auth.user.email,
+          updated_by: "メンバー",
         },
       },
       { status: 201 },
@@ -103,7 +103,7 @@ export async function PATCH(
       .bind(
         (body.title ?? "無題").slice(0, 120),
         body.markdown ?? "",
-        auth.user.email,
+        `account:${auth.user.accountKey}`,
         body.id,
         auth.membership.workspace_id,
         body.baseRevision,
@@ -112,7 +112,7 @@ export async function PATCH(
     if (!result.meta.changes) {
       const current = await db()
         .prepare(
-          "SELECT id, title, markdown, revision, updated_by, updated_at FROM scenes WHERE id = ?1 AND workspace_id = ?2",
+          "SELECT id, title, markdown, revision, 'メンバー' AS updated_by, updated_at FROM scenes WHERE id = ?1 AND workspace_id = ?2",
         )
         .bind(body.id, auth.membership.workspace_id)
         .first();
@@ -123,7 +123,7 @@ export async function PATCH(
     }
     const scene = await db()
       .prepare(
-        "SELECT id, title, markdown, position, revision, updated_by, updated_at FROM scenes WHERE id = ?1",
+        "SELECT id, title, markdown, position, revision, 'メンバー' AS updated_by, updated_at FROM scenes WHERE id = ?1",
       )
       .bind(body.id)
       .first();

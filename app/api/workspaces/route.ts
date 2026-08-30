@@ -5,7 +5,7 @@ import { validateWorkspaceCreation } from "@/lib/creation-validation";
 export async function GET() {
   const auth = await requireApiUser();
   if (!auth.ok) return auth.response;
-  return Response.json({ workspaces: await listWorkspaces(auth.user.email) });
+  return Response.json({ workspaces: await listWorkspaces(auth.user.accountKey) });
 }
 
 export async function POST(request: Request) {
@@ -31,12 +31,12 @@ export async function POST(request: Request) {
         .prepare(
           "INSERT INTO workspaces (id, slug, name, owner_email) VALUES (?1, ?2, ?3, ?4)",
         )
-        .bind(id, slug, name, auth.user.email),
+        .bind(id, slug, name, `account:${auth.user.accountKey}`),
       db()
         .prepare(
-          "INSERT INTO members (workspace_id, email, role, invited_by) VALUES (?1, ?2, 'owner', ?2)",
+          "INSERT INTO account_memberships (workspace_id, account_key, role) VALUES (?1, ?2, 'owner')",
         )
-        .bind(id, auth.user.email),
+        .bind(id, auth.user.accountKey),
     ]);
     return Response.json(
       { workspace: { id, slug, name, role: "owner" } },

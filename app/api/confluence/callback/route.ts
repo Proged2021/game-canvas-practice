@@ -1,9 +1,6 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
-import {
-  authorizeApplicationUser,
-  resolveWorkspaceMembership,
-} from "@/lib/application-access";
-import { db } from "@/lib/db";
+import { principalForUser } from "@/lib/account-principal";
+import { db, getMembership } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { CONFLUENCE_CALLBACK_URL, exchangeCode } from "@/lib/confluence";
 import { validateOAuthStateContext, type OAuthStateRecord } from "@/lib/oauth-state";
@@ -24,18 +21,15 @@ export async function GET(request: Request) {
   // DELETE ... RETURNING makes every recognized state single-use, including failed and cancelled callbacks.
   const record = await db().prepare("DELETE FROM oauth_states WHERE state=?1 RETURNING workspace_id, user_email, expires_at").bind(state).first<OAuthStateRecord>();
   if (!record) return safeRootRedirect("state-invalid");
-  const workspace = await db().prepare("SELECT slug, owner_email FROM workspaces WHERE id=?1").bind(record.workspace_id).first<{ slug: string; owner_email: string }>();
+  const workspace = await db().prepare("SELECT slug FROM workspaces WHERE id=?1").bind(record.workspace_id).first<{ slug: string }>();
   if (!workspace) return safeRootRedirect("state-invalid");
 
   const identity = await getChatGPTUser();
-  const authorization = identity
-    ? await authorizeApplicationUser(identity)
-    : null;
-  const user = authorization?.ok ? authorization.user : null;
+  const user = identity ? await principalForUser(identity) : null;
   const membership = user
-    ? await resolveWorkspaceMembership(workspace.slug, user)
+    ? await getMembership(workspace.slug, user.accountKey)
     : null;
-  const validation = validateOAuthStateContext(record, workspace, user?.email ?? null, membership?.role ?? null);
+  const validation = validateOAuthStateContext(record, workspace, user?.accountKey ?? null, membership?.role ?? null);
   // Do not disclose a workspace path when the callback has no matching authenticated owner.
   if (!user || !membership || membership.role !== "owner") return safeRootRedirect("auth-required");
   if (validation !== "ok") return workspaceRedirect(workspace.slug, validation);
@@ -58,7 +52,7 @@ export async function GET(request: Request) {
       ON CONFLICT(workspace_id) DO UPDATE SET cloud_id=excluded.cloud_id, cloud_url=excluded.cloud_url,
       access_token_ciphertext=excluded.access_token_ciphertext, refresh_token_ciphertext=excluded.refresh_token_ciphertext,
       token_expires_at=excluded.token_expires_at, last_error=NULL, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
-      .bind(record.workspace_id, resource.id, resource.url, await encrypt(token.access_token), token.refresh_token ? await encrypt(token.refresh_token) : null, new Date(Date.now() + token.expires_in * 1000).toISOString(), user.email).run();
+      .bind(record.workspace_id, resource.id, resource.url, await encrypt(token.access_token), token.refresh_token ? await encrypt(token.refresh_token) : null, new Date(Date.now() + token.expires_in * 1000).toISOString(), `account:${user.accountKey}`).run();
     return workspaceRedirect(workspace.slug, "connected");
   } catch {
     return workspaceRedirect(workspace.slug, "failed");

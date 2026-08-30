@@ -19,7 +19,7 @@ test("dashboard exposes both workspace creation entry points", async () => {
   assert.doesNotMatch(source, /from "next\/link"/);
   assert.match(source, /<a[\s\S]*href=\{`\/w\/\$\{item\.slug\}`\}/);
   assert.match(source, /aria-label=\{`\$\{item\.name\}を開く`\}/);
-  assert.match(page, /await listWorkspaces\(authorizedUser\.user\.email\)/);
+  assert.match(page, /await listWorkspaces\(principal\.accountKey\)/);
   assert.match(page, /initialWorkspaces=\{initialWorkspaces\}/);
 });
 
@@ -28,7 +28,7 @@ test("workspace creation persists the workspace and owner together", async () =>
 
   assert.match(source, /await db\(\)\.batch\(\[/);
   assert.match(source, /INSERT INTO workspaces/);
-  assert.match(source, /INSERT INTO members/);
+  assert.match(source, /INSERT INTO account_memberships/);
   assert.match(source, /'owner'/);
   assert.match(source, /status: 409/);
   assert.match(source, /このスラッグは既に使用されています/);
@@ -51,7 +51,7 @@ test("scene creation exposes empty and persistent editor flows", async () => {
   assert.match(client, /className="split-workspace"/);
   assert.match(route, /INSERT INTO scenes/);
   assert.match(route, /confluence_page_url/);
-  assert.match(page, /await loadWorkspaceData\(membership, user\)/);
+  assert.match(page, /await loadWorkspaceData\(membership\)/);
   assert.match(page, /initialData=\{initialData\}/);
 });
 

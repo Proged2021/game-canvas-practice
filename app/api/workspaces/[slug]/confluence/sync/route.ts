@@ -31,7 +31,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     await db().prepare(`UPDATE confluence_connections SET page_id=?1, page_url=?2, page_title=?3, page_version=?4,
       synced_html=?5, last_synced_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP, last_error=NULL,
       updated_by=?6, updated_at=CURRENT_TIMESTAMP WHERE workspace_id=?7`)
-      .bind(page.id, pageUrl, page.title, page.version.number, html, auth.user.email, auth.membership.workspace_id).run();
+      .bind(page.id, pageUrl, page.title, page.version.number, html, `account:${auth.user.accountKey}`, auth.membership.workspace_id).run();
     return Response.json({ confluence: { connected: 1, page_id: page.id, page_url: pageUrl, page_title: page.title, page_version: page.version.number, synced_html: html, last_synced_at: new Date().toISOString(), last_error: null } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Confluence同期に失敗しました";

@@ -1,16 +1,10 @@
 export type ChatGPTUser = {
-  displayName: string;
   email: string;
-  fullName: string | null;
   userId: string | null;
 };
 
 const USER_EMAIL_HEADER = "oai-authenticated-user-email";
 const USER_ID_HEADER = "oai-authenticated-user-id";
-const USER_FULL_NAME_HEADER = "oai-authenticated-user-full-name";
-const USER_FULL_NAME_ENCODING_HEADER =
-  "oai-authenticated-user-full-name-encoding";
-const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
 const SIGN_IN_PATH = "/signin-with-chatgpt";
 const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
@@ -21,17 +15,8 @@ export function parseChatGPTUserHeaders(
   const email = requestHeaders.get(USER_EMAIL_HEADER)?.trim().toLowerCase();
   if (!email || !/^[^\s@]+@[^\s@]+$/.test(email)) return null;
 
-  const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get(USER_FULL_NAME_ENCODING_HEADER) === PERCENT_ENCODED_UTF8
-      ? safeDecodeURIComponent(encodedFullName)
-      : null;
-
   return {
-    displayName: fullName ?? email,
     email,
-    fullName,
     userId: normalizeUserId(requestHeaders.get(USER_ID_HEADER)),
   };
 }
@@ -74,12 +59,4 @@ function isReservedAuthPath(pathname: string): boolean {
     pathname === SIGN_OUT_PATH ||
     pathname === CALLBACK_PATH
   );
-}
-
-function safeDecodeURIComponent(value: string): string | null {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
 }

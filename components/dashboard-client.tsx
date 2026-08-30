@@ -22,11 +22,9 @@ import { Input } from "@/components/ui/input";
 import type { WorkspaceSummary } from "@/lib/db";
 
 export function DashboardClient({
-  user,
   signOutPath,
   initialWorkspaces,
 }: {
-  user: { displayName: string; email: string };
   signOutPath: string;
   initialWorkspaces: WorkspaceSummary[];
 }) {
@@ -111,7 +109,7 @@ export function DashboardClient({
             ワークスペースを作成
           </Button>
           <div className="account">
-            <span>{user.displayName}</span>
+            <span>ログイン済み</span>
             <a href={signOutPath} title="ログアウト" aria-label="ログアウト">
               <LogOut size={16} />
             </a>
@@ -173,6 +171,7 @@ export function DashboardClient({
                 <Plus size={17} />
                 新しいワークスペースを作成
               </Button>
+              <a className="join-link" href="/join">招待リンクから参加</a>
             </div>
           )}
         </div>

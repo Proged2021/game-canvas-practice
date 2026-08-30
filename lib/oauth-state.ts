@@ -6,7 +6,6 @@ export type OAuthStateRecord = {
 
 export type OAuthWorkspace = {
   slug: string;
-  owner_email: string;
 };
 
 export type OAuthStateResult =
@@ -18,7 +17,7 @@ export type OAuthStateResult =
 export function validateOAuthStateContext(
   record: OAuthStateRecord | null,
   workspace: OAuthWorkspace | null,
-  currentUserEmail: string | null,
+  currentAccountKey: string | null,
   membershipRole: string | null,
   now = Date.now(),
 ): OAuthStateResult {
@@ -26,9 +25,8 @@ export function validateOAuthStateContext(
   if (!Number.isFinite(Date.parse(record.expires_at)) || Date.parse(record.expires_at) <= now)
     return "state-expired";
   if (
-    !currentUserEmail ||
-    record.user_email.toLowerCase() !== currentUserEmail.toLowerCase() ||
-    workspace.owner_email.toLowerCase() !== currentUserEmail.toLowerCase() ||
+    !currentAccountKey ||
+    record.user_email !== currentAccountKey ||
     membershipRole !== "owner"
   )
     return "owner-mismatch";

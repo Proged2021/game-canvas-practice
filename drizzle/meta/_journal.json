@@ -29,6 +29,13 @@
       "when": 1788110623008,
       "tag": "0003_bright_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788124573288,
+      "tag": "0004_flowery_doctor_octopus",
+      "breakpoints": true
     }
   ]
 }

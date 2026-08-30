@@ -21,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     const expires = new Date(Date.now() + 10 * 60_000).toISOString();
     await db().prepare("DELETE FROM oauth_states WHERE expires_at < CURRENT_TIMESTAMP").run();
     await db().prepare("INSERT INTO oauth_states (state, workspace_id, user_email, expires_at) VALUES (?1, ?2, ?3, ?4)")
-      .bind(state, auth.membership.workspace_id, auth.user.email, expires).run();
+      .bind(state, auth.membership.workspace_id, auth.user.accountKey, expires).run();
     const url = buildAtlassianAuthorizeUrl(clientId, redirectUri, state);
     return Response.redirect(url.toString(), 302);
   } catch {

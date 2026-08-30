@@ -8,5 +8,5 @@ export async function GET(
   const { slug } = await params;
   const auth = await authorizeWorkspace(slug);
   if (!auth.ok) return auth.response;
-  return Response.json(await loadWorkspaceData(auth.membership, auth.user));
+  return Response.json(await loadWorkspaceData(auth.membership));
 }

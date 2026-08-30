@@ -131,3 +131,61 @@ export const workspaceInvitations = sqliteTable(
       .where(sql`${table.status} = 'pending'`),
   ],
 );
+
+export const accountMemberships = sqliteTable(
+  "account_memberships",
+  {
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    accountKey: text("account_key").notNull(),
+    role: text("role", { enum: ["owner", "editor", "viewer"] }).notNull(),
+    invitedByAccountKey: text("invited_by_account_key"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.accountKey] }),
+    index("account_memberships_account_idx").on(table.accountKey),
+  ],
+);
+
+export const secureWorkspaceInvites = sqliteTable(
+  "secure_workspace_invites",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    role: text("role", { enum: ["editor", "viewer"] }).notNull(),
+    status: text("status", { enum: ["active", "used", "cancelled"] }).notNull().default("active"),
+    expiresAt: text("expires_at").notNull(),
+    createdByAccountKey: text("created_by_account_key").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    usedAt: text("used_at"),
+  },
+  (table) => [index("secure_workspace_invites_workspace_idx").on(table.workspaceId)],
+);
+
+export const workspaceJoinRequests = sqliteTable(
+  "workspace_join_requests",
+  {
+    id: text("id").primaryKey(),
+    inviteId: text("invite_id").notNull().references(() => secureWorkspaceInvites.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    applicantAccountKey: text("applicant_account_key").notNull(),
+    confirmationCode: text("confirmation_code").notNull(),
+    status: text("status", { enum: ["pending", "approved", "rejected", "expired"] }).notNull().default("pending"),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    decidedAt: text("decided_at"),
+  },
+  (table) => [
+    index("workspace_join_requests_workspace_idx").on(table.workspaceId),
+    uniqueIndex("workspace_join_requests_pending_unique")
+      .on(table.inviteId, table.applicantAccountKey)
+      .where(sql`${table.status} = 'pending'`),
+  ],
+);
+
+export const ownerIdentityMigrations = sqliteTable("owner_identity_migrations", {
+  workspaceSlug: text("workspace_slug").primaryKey(),
+  migratedAccountKey: text("migrated_account_key").notNull(),
+  migratedAt: text("migrated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

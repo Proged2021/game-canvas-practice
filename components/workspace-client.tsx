@@ -128,10 +128,11 @@ export type WorkspaceData = {
     slug: string;
     role: "owner" | "editor" | "viewer";
   };
-  currentUser: { email: string; displayName: string };
+  currentUser: { label: string };
   scenes: Scene[];
-  members: Array<{ email: string; role: string }>;
-  invitations: Array<{ id: string; email: string; role: "editor" | "viewer"; status: string }>;
+  members: Array<{ role: string; created_at: string }>;
+  invitations: Array<{ id: string; role: "editor" | "viewer"; status: string; expires_at: string; created_at: string }>;
+  joinRequests: Array<{ id: string; confirmation_code: string; role: "editor" | "viewer"; status: string; created_at: string; expires_at: string }>;
   confluence: Confluence;
 };
 
@@ -150,10 +151,10 @@ export function WorkspaceClient({
     >("saved"),
     [online, setOnline] = useState(true),
     [error, setError] = useState("");
-  const [inviteEmail, setInviteEmail] = useState(""),
-    [inviteRole, setInviteRole] = useState("editor"),
+  const [inviteRole, setInviteRole] = useState("editor"),
     [inviteSaving, setInviteSaving] = useState(false),
     [inviteError, setInviteError] = useState(""),
+    [inviteUrl, setInviteUrl] = useState(""),
     [pageInput, setPageInput] = useState(
       initialData.scenes[0]?.confluence_page_url ?? "",
     ),
@@ -383,22 +384,30 @@ export function WorkspaceClient({
     const r = await fetch(`/api/workspaces/${slug}/members`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      body: JSON.stringify({ role: inviteRole }),
     });
     const d = (await r.json()) as {
       error?: string;
-      invitation: { id: string; email: string; role: "editor" | "viewer"; status: string };
+      inviteUrl?: string;
+      invitation: { id: string; role: "editor" | "viewer"; status: string; expires_at: string; created_at: string };
     };
     setInviteSaving(false);
     if (!r.ok) return setInviteError(d.error ?? "招待を保存できませんでした");
     setData((p) => p ? { ...p, invitations: [d.invitation, ...p.invitations] } : p);
-    setInviteEmail("");
+    setInviteUrl(d.inviteUrl ?? "");
   }
   async function cancelInvitation(id: string) {
     const r = await fetch(`/api/workspaces/${slug}/members`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) });
     const d = await r.json() as { error?: string };
     if (!r.ok) return setInviteError(d.error ?? "招待を取り消せませんでした");
     setData((p) => p ? { ...p, invitations: p.invitations.filter((item) => item.id !== id) } : p);
+  }
+  async function decideJoinRequest(id: string, decision: "approve" | "reject") {
+    setInviteError("");
+    const r = await fetch(`/api/workspaces/${slug}/members`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, decision }) });
+    const d = await r.json() as { error?: string };
+    if (!r.ok) return setInviteError(d.error ?? "参加申請を処理できませんでした");
+    await load();
   }
   async function sync() {
     setSyncing(true);
@@ -500,17 +509,9 @@ export function WorkspaceClient({
                 <DialogHeader>
                   <DialogTitle>メンバーを招待</DialogTitle>
                   <DialogDescription>
-                    ①このアプリ内で招待を保存し、②Siteの「共有」から同じユーザーに訪問者アクセスを付与してください。ここからメール送信やSite共有は行いません。
+                    招待URLを共有し、申請者から別経路で確認コードを受け取って承認してください。リンクだけでは参加できません。
                   </DialogDescription>
                 </DialogHeader>
-                <label htmlFor="invite-email">メールアドレス</label>
-                <Input
-                  id="invite-email"
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder="member@example.com"
-                />
                 <label htmlFor="invite-role">アプリ内の権限</label>
                 <Select
                   value={inviteRole}
@@ -525,18 +526,24 @@ export function WorkspaceClient({
                   </SelectContent>
                 </Select>
                 {inviteError && <p className="form-error" role="alert"><AlertCircle size={16} />{inviteError}</p>}
-                <Button onClick={invite} disabled={inviteSaving || !inviteEmail.trim()}>{inviteSaving ? "保存中…" : "① アプリ内の招待を保存"}</Button>
+                <Button onClick={invite} disabled={inviteSaving}>{inviteSaving ? "発行中…" : "招待URLを発行"}</Button>
+                {inviteUrl && <div className="copy-fallback" role="status"><label htmlFor="generated-invite-url">今回発行した招待URL</label><Input id="generated-invite-url" readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} /><Button type="button" variant="outline" onClick={() => navigator.clipboard.writeText(inviteUrl)}><Copy size={14} />コピー</Button><p>安全のため、このURLは再表示できません。紛失時は取り消して再発行してください。</p></div>}
                 <div className="member-list" aria-label="メンバー一覧">
                   <strong>メンバー</strong>
-                  {data.members.map((member) => <div key={member.email}><span>{member.email}</span><Badge variant="secondary">{member.role}</Badge></div>)}
+                  {data.members.map((member, index) => <div key={`${member.created_at}-${index}`}><span>匿名メンバー {index + 1}</span><Badge variant="secondary">{member.role}</Badge></div>)}
                 </div>
                 <div className="member-list" aria-label="招待中一覧">
-                  <strong>招待中</strong>
-                  {data.invitations.length === 0 ? <p>招待中のユーザーはいません</p> : data.invitations.map((invitation) => (
-                    <div key={invitation.id}><span>{invitation.email}</span><Badge variant="outline">{invitation.role}</Badge><Button size="sm" variant="ghost" onClick={() => cancelInvitation(invitation.id)}>取消</Button></div>
+                  <strong>有効な招待URL</strong>
+                  {data.invitations.length === 0 ? <p>有効な招待はありません</p> : data.invitations.map((invitation) => (
+                    <div key={invitation.id}><span>期限 {new Date(invitation.expires_at).toLocaleString("ja-JP")}</span><Badge variant="outline">{invitation.role}</Badge><Button size="sm" variant="ghost" onClick={() => cancelInvitation(invitation.id)}>取消</Button></div>
                   ))}
                 </div>
-                <p className="two-step-note">② 保存後、このSiteの「共有」画面で訪問者アクセスを付与してください。現在のowner-only設定は自動では変更されません。</p>
+                <div className="member-list" aria-label="参加申請一覧">
+                  <strong>承認待ちの参加申請</strong>
+                  {(data.joinRequests ?? []).length === 0 ? <p>承認待ちの申請はありません</p> : (data.joinRequests ?? []).map((request) => (
+                    <div key={request.id}><span>確認コード <strong>{request.confirmation_code}</strong><small>{new Date(request.created_at).toLocaleString("ja-JP")}</small></span><Badge variant="outline">{request.role}</Badge><Button size="sm" onClick={() => decideJoinRequest(request.id, "approve")}>承認</Button><Button size="sm" variant="ghost" onClick={() => decideJoinRequest(request.id, "reject")}>拒否</Button></div>
+                  ))}
+                </div>
               </DialogContent>
             </Dialog>
           )}

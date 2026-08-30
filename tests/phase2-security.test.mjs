@@ -51,7 +51,7 @@ test("OAuth callback consumes state once and validates expiry, user, owner and c
   assert.match(callback, /DELETE FROM oauth_states WHERE state=\?1 RETURNING/);
   assert.match(callback, /validateOAuthStateContext/);
   assert.match(validation, /Date\.parse\(record\.expires_at\)/);
-  assert.match(validation, /record\.user_email\.toLowerCase\(\) !== currentUserEmail\.toLowerCase\(\)/);
+  assert.match(validation, /record\.user_email !== currentAccountKey/);
   assert.match(validation, /membershipRole !== "owner"/);
   assert.match(callback, /url\.searchParams\.get\("error"\)/);
   assert.match(callback, /accessible-resources/);
@@ -66,15 +66,17 @@ test("sync uses v2 view format, safe errors and server-side token access", async
   assert.match(sync, /authorizeWorkspace\(slug, checkOnly \? undefined : \["owner", "editor"\]\)/);
 });
 
-test("invitations are owner-only, pending records and never fake Site sharing", async () => {
+test("invitations use hashed one-time URLs and explicit owner approval", async () => {
   const [route, client, schema] = await Promise.all([read("app/api/workspaces/[slug]/members/route.ts"), read("components/workspace-client.tsx"), read("db/schema.ts")]);
   assert.match(route, /authorizeWorkspace\([^\n]+\["owner"\]\)/);
-  assert.match(route, /自分自身を招待することはできません/);
-  assert.match(route, /既に招待があります/);
   assert.match(route, /body\.role !== "editor" && body\.role !== "viewer"/);
   assert.match(route, /status='cancelled'/);
-  assert.match(schema, /workspaceInvitations/);
-  assert.match(client, /①このアプリ内で招待/);
-  assert.match(client, /②Siteの「共有」/);
+  assert.match(route, /hashInviteToken/);
+  assert.match(route, /workspace_join_requests/);
+  assert.match(route, /status='approved'/);
+  assert.match(schema, /secureWorkspaceInvites/);
+  assert.match(schema, /workspaceJoinRequests/);
+  assert.match(client, /招待URLを発行/);
+  assert.match(client, /確認コード/);
   assert.doesNotMatch(route, /sendMail|update_site_access/i);
 });

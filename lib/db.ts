@@ -14,54 +14,37 @@ export type WorkspaceSummary = {
   scene_count: number;
 };
 
-export async function listWorkspaces(email: string) {
+export async function listWorkspaces(accountKey: string) {
   const result = await db()
     .prepare(
       `
     SELECT w.slug, w.name, m.role,
       (SELECT COUNT(*) FROM scenes s WHERE s.workspace_id = w.id) AS scene_count
-    FROM workspaces w JOIN members m ON m.workspace_id = w.id
-    WHERE lower(m.email) = lower(?1) ORDER BY w.updated_at DESC
+    FROM workspaces w JOIN account_memberships m ON m.workspace_id = w.id
+    WHERE m.account_key = ?1 ORDER BY w.updated_at DESC
   `,
     )
-    .bind(email)
+    .bind(accountKey)
     .all<WorkspaceSummary>();
   return result.results;
 }
 
-export async function getMembership(slug: string, email: string) {
-  const existing = await db()
+export async function getMembership(slug: string, accountKey: string) {
+  return db()
     .prepare(
       `
-    SELECT w.id AS workspace_id, w.slug, w.name, w.owner_email, m.role
-    FROM workspaces w JOIN members m ON m.workspace_id = w.id
-    WHERE w.slug = ?1 AND lower(m.email) = lower(?2)
+    SELECT w.id AS workspace_id, w.slug, w.name, m.role
+    FROM workspaces w JOIN account_memberships m ON m.workspace_id = w.id
+    WHERE w.slug = ?1 AND m.account_key = ?2
   `,
     )
-    .bind(slug, email)
+    .bind(slug, accountKey)
     .first<{
       workspace_id: string;
       slug: string;
       name: string;
-      owner_email: string;
       role: Role;
     }>();
-  if (existing) return existing;
-
-  const invitation = await db()
-    .prepare(
-      `SELECT i.id, i.workspace_id, i.role, w.slug, w.name, w.owner_email
-       FROM workspace_invitations i JOIN workspaces w ON w.id=i.workspace_id
-       WHERE w.slug=?1 AND lower(i.email)=lower(?2) AND i.status='pending'`,
-    )
-    .bind(slug, email)
-    .first<{ id: string; workspace_id: string; role: "editor" | "viewer"; slug: string; name: string; owner_email: string }>();
-  if (!invitation) return null;
-  await db().batch([
-    db().prepare("INSERT OR IGNORE INTO members (workspace_id,email,role,invited_by) SELECT workspace_id,email,role,invited_by FROM workspace_invitations WHERE id=?1 AND status='pending'").bind(invitation.id),
-    db().prepare("UPDATE workspace_invitations SET status='accepted', updated_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='pending'").bind(invitation.id),
-  ]);
-  return { ...invitation, role: invitation.role };
 }
 
 export async function loadWorkspaceData(
@@ -71,22 +54,29 @@ export async function loadWorkspaceData(
     name: string;
     role: Role;
   },
-  user: { email: string; displayName: string },
 ) {
-  const [scenes, members, invitations, connection] = await Promise.all([
+  const [scenes, invitations, members, joinRequests, connection] = await Promise.all([
     db()
       .prepare(
-        "SELECT id, title, confluence_page_url, markdown, position, revision, updated_by, updated_at FROM scenes WHERE workspace_id = ?1 ORDER BY position, created_at",
+        "SELECT id, title, confluence_page_url, markdown, position, revision, 'メンバー' AS updated_by, updated_at FROM scenes WHERE workspace_id = ?1 ORDER BY position, created_at",
       )
       .bind(membership.workspace_id)
       .all(),
     db()
-      .prepare("SELECT id, email, role, status, invited_by, created_at FROM workspace_invitations WHERE workspace_id=?1 AND status='pending' ORDER BY created_at DESC")
+      .prepare("SELECT id, role, status, expires_at, created_at FROM secure_workspace_invites WHERE workspace_id=?1 AND status='active' AND expires_at>CURRENT_TIMESTAMP ORDER BY created_at DESC")
       .bind(membership.workspace_id)
       .all(),
     db()
       .prepare(
-        "SELECT email, role, invited_by, created_at FROM members WHERE workspace_id = ?1 ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END, email",
+        "SELECT role, created_at FROM account_memberships WHERE workspace_id = ?1 ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END, created_at",
+      )
+      .bind(membership.workspace_id)
+      .all(),
+    db()
+      .prepare(
+        `SELECT r.id,r.confirmation_code,r.status,r.created_at,r.expires_at,i.role
+         FROM workspace_join_requests r JOIN secure_workspace_invites i ON i.id=r.invite_id
+         WHERE r.workspace_id=?1 AND r.status='pending' AND r.expires_at>CURRENT_TIMESTAMP AND i.status='active' AND i.expires_at>CURRENT_TIMESTAMP ORDER BY r.created_at DESC`,
       )
       .bind(membership.workspace_id)
       .all(),
@@ -106,10 +96,11 @@ export async function loadWorkspaceData(
       name: membership.name,
       role: membership.role,
     },
-    currentUser: user,
+    currentUser: { label: "ChatGPTユーザー" },
     scenes: scenes.results,
     members: members.results,
     invitations: invitations.results,
+    joinRequests: joinRequests.results,
     confluence: connection ?? null,
   };
 }
