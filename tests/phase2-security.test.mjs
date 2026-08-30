@@ -21,10 +21,19 @@ test("OAuth status is secret-safe and uses the exact production callback", async
 
 test("OAuth starts from a native new-tab link instead of an embedded-frame navigation", async () => {
   const client = await read("components/workspace-client.tsx");
-  assert.match(client, /href=\{`\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start`\}/);
+  assert.match(client, /authStartUrl = `\$\{SITE_ORIGIN\}\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start`/);
+  assert.match(client, /href=\{authStartUrl\}/);
   assert.match(client, /target="_blank"/);
   assert.match(client, /rel="noopener noreferrer"/);
   assert.match(client, /aria-label="Atlassian OAuth接続を新しいタブで開く"/);
+  assert.match(client, /target="_top"/);
+  assert.match(client, /認証リンクをコピー/);
+  assert.match(client, /navigator\.clipboard\.writeText\(authStartUrl\)/);
+  assert.match(client, /プレビューで新しいタブが開かない場合は、同じChatGPTアカウントでログインした通常ブラウザに認証リンクを貼り付けてください/);
+  assert.match(client, /readOnly value=\{authStartUrl\}/);
+  assert.match(client, /認証リンクをコピーできませんでした/);
+  assert.doesNotMatch(client, /auth\.atlassian\.com\/authorize/);
+  assert.doesNotMatch(client, /client_secret/);
   assert.doesNotMatch(client, /location\.href\s*=\s*d\.url/);
   assert.doesNotMatch(client, /fetch\(`\/api\/workspaces\/\$\{slug\}\/confluence\/start`/);
 });
