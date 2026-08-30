@@ -30,7 +30,7 @@ export async function listWorkspaces(email: string) {
 }
 
 export async function getMembership(slug: string, email: string) {
-  return db()
+  const existing = await db()
     .prepare(
       `
     SELECT w.id AS workspace_id, w.slug, w.name, w.owner_email, m.role
@@ -46,6 +46,22 @@ export async function getMembership(slug: string, email: string) {
       owner_email: string;
       role: Role;
     }>();
+  if (existing) return existing;
+
+  const invitation = await db()
+    .prepare(
+      `SELECT i.id, i.workspace_id, i.role, w.slug, w.name, w.owner_email
+       FROM workspace_invitations i JOIN workspaces w ON w.id=i.workspace_id
+       WHERE w.slug=?1 AND lower(i.email)=lower(?2) AND i.status='pending'`,
+    )
+    .bind(slug, email)
+    .first<{ id: string; workspace_id: string; role: "editor" | "viewer"; slug: string; name: string; owner_email: string }>();
+  if (!invitation) return null;
+  await db().batch([
+    db().prepare("INSERT OR IGNORE INTO members (workspace_id,email,role,invited_by) SELECT workspace_id,email,role,invited_by FROM workspace_invitations WHERE id=?1 AND status='pending'").bind(invitation.id),
+    db().prepare("UPDATE workspace_invitations SET status='accepted', updated_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='pending'").bind(invitation.id),
+  ]);
+  return { ...invitation, role: invitation.role };
 }
 
 export async function loadWorkspaceData(
@@ -57,11 +73,15 @@ export async function loadWorkspaceData(
   },
   user: { email: string; displayName: string },
 ) {
-  const [scenes, members, connection] = await Promise.all([
+  const [scenes, members, invitations, connection] = await Promise.all([
     db()
       .prepare(
         "SELECT id, title, confluence_page_url, markdown, position, revision, updated_by, updated_at FROM scenes WHERE workspace_id = ?1 ORDER BY position, created_at",
       )
+      .bind(membership.workspace_id)
+      .all(),
+    db()
+      .prepare("SELECT id, email, role, status, invited_by, created_at FROM workspace_invitations WHERE workspace_id=?1 AND status='pending' ORDER BY created_at DESC")
       .bind(membership.workspace_id)
       .all(),
     db()
@@ -89,6 +109,7 @@ export async function loadWorkspaceData(
     currentUser: user,
     scenes: scenes.results,
     members: members.results,
+    invitations: invitations.results,
     confluence: connection ?? null,
   };
 }

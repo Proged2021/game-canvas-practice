@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   BookOpen,
   Check,
+  Copy,
   CircleDot,
   Cloud,
   CloudOff,
@@ -66,6 +67,13 @@ type Confluence = {
   last_synced_at?: string;
   last_error?: string;
 } | null;
+type ConfluenceStatus = {
+  configured: boolean;
+  connected: boolean;
+  callbackUrl: string;
+  requiredSecrets: string[];
+  tokenEncryptionConfigured: boolean;
+};
 export type WorkspaceData = {
   workspace: {
     name: string;
@@ -75,6 +83,7 @@ export type WorkspaceData = {
   currentUser: { email: string; displayName: string };
   scenes: Scene[];
   members: Array<{ email: string; role: string }>;
+  invitations: Array<{ id: string; email: string; role: "editor" | "viewer"; status: string }>;
   confluence: Confluence;
 };
 
@@ -95,10 +104,13 @@ export function WorkspaceClient({
     [error, setError] = useState("");
   const [inviteEmail, setInviteEmail] = useState(""),
     [inviteRole, setInviteRole] = useState("editor"),
+    [inviteSaving, setInviteSaving] = useState(false),
+    [inviteError, setInviteError] = useState(""),
     [pageInput, setPageInput] = useState(
       initialData.scenes[0]?.confluence_page_url ?? "",
     ),
     [syncing, setSyncing] = useState(false);
+  const [confluenceStatus, setConfluenceStatus] = useState<ConfluenceStatus | null>(null);
   const [sceneDialogOpen, setSceneDialogOpen] = useState(false),
     [sceneTitle, setSceneTitle] = useState(""),
     [sceneConfluenceUrl, setSceneConfluenceUrl] = useState(""),
@@ -147,6 +159,23 @@ export function WorkspaceClient({
       removeEventListener("offline", no);
     };
   }, [load]);
+  useEffect(() => {
+    fetch(`/api/workspaces/${slug}/confluence/status`, { cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() as Promise<ConfluenceStatus> : null)
+      .then((status) => { if (status) setConfluenceStatus(status); })
+      .catch(() => undefined);
+    const result = new URLSearchParams(location.search).get("confluence");
+    const messages: Record<string, string> = {
+      connected: "Confluenceに接続しました",
+      cancelled: "Confluence接続はキャンセルされました",
+      "state-invalid": "接続情報が無効か、既に使用されています。もう一度接続してください",
+      "state-expired": "接続操作の有効期限が切れました。もう一度接続してください",
+      "owner-mismatch": "接続を開始したオーナーと現在のユーザーが一致しません",
+      "no-resource": "読み取り可能なConfluenceサイトが見つかりません",
+      failed: "Confluence接続を完了できませんでした",
+    };
+    if (result && messages[result]) queueMicrotask(() => setError(messages[result]));
+  }, [slug]);
   useEffect(() => {
     if (!data?.confluence?.connected) return;
     const timer = setInterval(async () => {
@@ -300,6 +329,9 @@ export function WorkspaceClient({
     }
   }
   async function invite() {
+    if (inviteSaving) return;
+    setInviteError("");
+    setInviteSaving(true);
     const r = await fetch(`/api/workspaces/${slug}/members`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -307,29 +339,28 @@ export function WorkspaceClient({
     });
     const d = (await r.json()) as {
       error?: string;
-      member: { email: string; role: string };
+      invitation: { id: string; email: string; role: "editor" | "viewer"; status: string };
     };
-    if (!r.ok) return setError(d.error ?? "メンバーを招待できませんでした");
-    setData((p) =>
-      p
-        ? {
-            ...p,
-            members: [
-              ...p.members.filter((m) => m.email !== d.member.email),
-              d.member,
-            ],
-          }
-        : p,
-    );
+    setInviteSaving(false);
+    if (!r.ok) return setInviteError(d.error ?? "招待を保存できませんでした");
+    setData((p) => p ? { ...p, invitations: [d.invitation, ...p.invitations] } : p);
     setInviteEmail("");
+  }
+  async function cancelInvitation(id: string) {
+    const r = await fetch(`/api/workspaces/${slug}/members`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) });
+    const d = await r.json() as { error?: string };
+    if (!r.ok) return setInviteError(d.error ?? "招待を取り消せませんでした");
+    setData((p) => p ? { ...p, invitations: p.invitations.filter((item) => item.id !== id) } : p);
   }
   async function connect() {
     const r = await fetch(`/api/workspaces/${slug}/confluence/start`, {
       method: "POST",
     });
-    const d = (await r.json()) as { error?: string; url: string };
-    if (!r.ok)
+    const d = (await r.json()) as ({ error?: string; url?: string } & Partial<ConfluenceStatus>);
+    if (!r.ok || !d.url) {
+      if (typeof d.configured === "boolean") setConfluenceStatus(d as ConfluenceStatus);
       return setError(d.error ?? "Confluence接続を開始できませんでした");
+    }
     location.href = d.url;
   }
   async function sync() {
@@ -432,19 +463,23 @@ export function WorkspaceClient({
                 <DialogHeader>
                   <DialogTitle>メンバーを招待</DialogTitle>
                   <DialogDescription>
-                    ChatGPTに登録しているメールアドレスと権限を指定します。
+                    ①このアプリ内で招待を保存し、②Siteの「共有」から同じユーザーに訪問者アクセスを付与してください。ここからメール送信やSite共有は行いません。
                   </DialogDescription>
                 </DialogHeader>
+                <label htmlFor="invite-email">メールアドレス</label>
                 <Input
+                  id="invite-email"
+                  type="email"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
                   placeholder="member@example.com"
                 />
+                <label htmlFor="invite-role">アプリ内の権限</label>
                 <Select
                   value={inviteRole}
                   onValueChange={(v) => setInviteRole(v ?? "editor")}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="invite-role" aria-label="招待する権限">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -452,7 +487,19 @@ export function WorkspaceClient({
                     <SelectItem value="viewer">閲覧者</SelectItem>
                   </SelectContent>
                 </Select>
-                <Button onClick={invite}>招待を保存</Button>
+                {inviteError && <p className="form-error" role="alert"><AlertCircle size={16} />{inviteError}</p>}
+                <Button onClick={invite} disabled={inviteSaving || !inviteEmail.trim()}>{inviteSaving ? "保存中…" : "① アプリ内の招待を保存"}</Button>
+                <div className="member-list" aria-label="メンバー一覧">
+                  <strong>メンバー</strong>
+                  {data.members.map((member) => <div key={member.email}><span>{member.email}</span><Badge variant="secondary">{member.role}</Badge></div>)}
+                </div>
+                <div className="member-list" aria-label="招待中一覧">
+                  <strong>招待中</strong>
+                  {data.invitations.length === 0 ? <p>招待中のユーザーはいません</p> : data.invitations.map((invitation) => (
+                    <div key={invitation.id}><span>{invitation.email}</span><Badge variant="outline">{invitation.role}</Badge><Button size="sm" variant="ghost" onClick={() => cancelInvitation(invitation.id)}>取消</Button></div>
+                  ))}
+                </div>
+                <p className="two-step-note">② 保存後、このSiteの「共有」画面で訪問者アクセスを付与してください。現在のowner-only設定は自動では変更されません。</p>
               </DialogContent>
             </Dialog>
           )}
@@ -487,7 +534,7 @@ export function WorkspaceClient({
                   v{data.confluence.page_version}
                 </Badge>
               )}
-              <Dialog>
+              {data.workspace.role === "owner" && <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="outline" size="sm">
                     <Settings2 size={15} />
@@ -502,12 +549,25 @@ export function WorkspaceClient({
                       2.0で接続し、ページIDまたはURLから表示用HTMLを取得します。
                     </DialogDescription>
                   </DialogHeader>
+                  <div className="connection-state" role="status">
+                    <strong>{data.confluence?.connected && data.confluence?.last_error?.includes("再認証") ? "再認証が必要" : data.confluence?.connected ? "接続済み" : confluenceStatus === null ? "設定を確認中" : confluenceStatus.configured ? "接続可能" : "未設定"}</strong>
+                    {!data.confluence?.connected && !confluenceStatus?.configured && <p>Confluence連携は未設定です。次のSecretsを設定してください。</p>}
+                  </div>
                   {!data.confluence?.connected && (
-                    <Button onClick={connect}>
+                    <Button onClick={connect} disabled={confluenceStatus?.configured === false}>
                       <Link2 size={16} />
                       Atlassianに接続
                     </Button>
                   )}
+                  {data.confluence?.connected && data.confluence?.last_error?.includes("再認証") && <p className="form-error">再認証が必要です</p>}
+                  <div className="oauth-public-info">
+                    <strong>必要なSecret名</strong>
+                    <code>ATLASSIAN_CLIENT_ID</code>
+                    <code>ATLASSIAN_CLIENT_SECRET</code>
+                    <strong>Callback URL</strong>
+                    <div className="copy-row"><code>{confluenceStatus?.callbackUrl ?? "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback"}</code><Button type="button" size="sm" variant="outline" aria-label="Callback URLをコピー" onClick={() => navigator.clipboard.writeText(confluenceStatus?.callbackUrl ?? "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback")}><Copy size={14} />コピー</Button></div>
+                    <p>設定後、オーナーがAtlassianへ接続し、対象ページURLを入力して同期します。</p>
+                  </div>
                   <Input
                     value={pageInput}
                     onChange={(e) => setPageInput(e.target.value)}
@@ -531,7 +591,7 @@ export function WorkspaceClient({
                     </p>
                   )}
                 </DialogContent>
-              </Dialog>
+              </Dialog>}
             </div>
           </div>
           <div className="story-scroll">
@@ -562,9 +622,9 @@ export function WorkspaceClient({
                 <h3>Confluenceページを接続</h3>
                 <p>画像・リンク・書式を保った読み取り専用本文を表示します。</p>
                 {data.workspace.role === "owner" && (
-                  <Button onClick={connect}>
+                  <Button onClick={connect} disabled={confluenceStatus?.configured === false}>
                     <Link2 size={16} />
-                    Atlassianに接続
+                    {confluenceStatus?.configured === false ? "Confluence連携は未設定" : "Atlassianに接続"}
                   </Button>
                 )}
               </div>

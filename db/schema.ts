@@ -5,6 +5,7 @@ import {
   primaryKey,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 export const workspaces = sqliteTable("workspaces", {
@@ -101,3 +102,32 @@ export const oauthStates = sqliteTable("oauth_states", {
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const workspaceInvitations = sqliteTable(
+  "workspace_invitations",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role", { enum: ["editor", "viewer"] }).notNull(),
+    status: text("status", { enum: ["pending", "accepted", "cancelled"] })
+      .notNull()
+      .default("pending"),
+    invitedBy: text("invited_by").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("workspace_invitations_workspace_idx").on(table.workspaceId),
+    index("workspace_invitations_email_idx").on(table.email),
+    uniqueIndex("workspace_invitations_pending_unique")
+      .on(table.workspaceId, table.email)
+      .where(sql`${table.status} = 'pending'`),
+  ],
+);

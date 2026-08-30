@@ -15,6 +15,20 @@
       "when": 1788105085606,
       "tag": "0001_aromatic_brother_voodoo",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788110411498,
+      "tag": "0002_jittery_sumo",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788110623008,
+      "tag": "0003_bright_stick",
+      "breakpoints": true
     }
   ]
 }

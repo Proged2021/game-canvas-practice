@@ -1,34 +1,53 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
-import { exchangeCode } from "@/lib/confluence";
+import { CONFLUENCE_CALLBACK_URL, exchangeCode } from "@/lib/confluence";
+
+type StateRecord = { workspace_id: string; user_email: string; expires_at: string };
+
+function redirect(slug: string, result: string) {
+  return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/w/${encodeURIComponent(slug)}?confluence=${result}`, 302);
+}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
+  if (!state) return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/?confluence=state-invalid`, 302);
+
+  // DELETE ... RETURNING makes every recognized state single-use, including failed and cancelled callbacks.
+  const record = await db().prepare("DELETE FROM oauth_states WHERE state=?1 RETURNING workspace_id, user_email, expires_at").bind(state).first<StateRecord>();
+  if (!record) return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/?confluence=state-invalid`, 302);
+  const workspace = await db().prepare("SELECT slug, owner_email FROM workspaces WHERE id=?1").bind(record.workspace_id).first<{ slug: string; owner_email: string }>();
+  if (!workspace) return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/?confluence=state-invalid`, 302);
+  if (Date.parse(record.expires_at) <= Date.now()) return redirect(workspace.slug, "state-expired");
+
   const user = await getChatGPTUser();
-  if (!code || !state || !user) return new Response("Invalid OAuth callback", { status: 400 });
-  const record = await db().prepare(`SELECT s.workspace_id, s.user_email, w.slug FROM oauth_states s
-    JOIN workspaces w ON w.id=s.workspace_id WHERE s.state=?1 AND s.expires_at > CURRENT_TIMESTAMP`).bind(state).first<{ workspace_id: string; user_email: string; slug: string }>();
-  if (!record || record.user_email.toLowerCase() !== user.email.toLowerCase()) return new Response("OAuth state validation failed", { status: 403 });
+  if (!user || record.user_email.toLowerCase() !== user.email.toLowerCase() || workspace.owner_email.toLowerCase() !== user.email.toLowerCase())
+    return redirect(workspace.slug, "owner-mismatch");
+  const membership = await db().prepare("SELECT role FROM members WHERE workspace_id=?1 AND lower(email)=lower(?2)").bind(record.workspace_id, user.email).first<{ role: string }>();
+  if (membership?.role !== "owner") return redirect(workspace.slug, "owner-mismatch");
+  if (url.searchParams.get("error")) return redirect(workspace.slug, "cancelled");
+  const code = url.searchParams.get("code");
+  if (!code) return redirect(workspace.slug, "failed");
+
   try {
-    const token = await exchangeCode(code, url.origin);
-    const resourcesResponse = await fetch("https://api.atlassian.com/oauth/token/accessible-resources", { headers: { authorization: `Bearer ${token.access_token}`, accept: "application/json" } });
-    if (!resourcesResponse.ok) throw new Error("Atlassian site lookup failed");
-    const resources = await resourcesResponse.json() as Array<{ id: string; url: string; name: string; scopes: string[] }>;
-    const resource = resources.find(item => item.scopes.some(scope => scope.includes("confluence"))) ?? resources[0];
-    if (!resource) throw new Error("利用可能なConfluenceサイトがありません");
+    const token = await exchangeCode(code);
+    const resourcesResponse = await fetch("https://api.atlassian.com/oauth/token/accessible-resources", {
+      headers: { authorization: `Bearer ${token.access_token}`, accept: "application/json" },
+    });
+    if (!resourcesResponse.ok) throw new Error("site-lookup");
+    const resources = await resourcesResponse.json() as Array<{ id: string; url: string; scopes: string[] }>;
+    const resource = resources.find((item) => item.scopes.includes("read:page:confluence"));
+    if (!resource) return redirect(workspace.slug, "no-resource");
     await db().prepare(`INSERT INTO confluence_connections
       (workspace_id, cloud_id, cloud_url, access_token_ciphertext, refresh_token_ciphertext, token_expires_at, updated_by)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
       ON CONFLICT(workspace_id) DO UPDATE SET cloud_id=excluded.cloud_id, cloud_url=excluded.cloud_url,
       access_token_ciphertext=excluded.access_token_ciphertext, refresh_token_ciphertext=excluded.refresh_token_ciphertext,
-      token_expires_at=excluded.token_expires_at, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
+      token_expires_at=excluded.token_expires_at, last_error=NULL, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
       .bind(record.workspace_id, resource.id, resource.url, await encrypt(token.access_token), token.refresh_token ? await encrypt(token.refresh_token) : null, new Date(Date.now() + token.expires_in * 1000).toISOString(), user.email).run();
-    await db().prepare("DELETE FROM oauth_states WHERE state=?1").bind(state).run();
-    return Response.redirect(`${url.origin}/w/${record.slug}?confluence=connected`, 302);
-  } catch (error) {
-    return Response.redirect(`${url.origin}/w/${record.slug}?confluence=error&message=${encodeURIComponent(error instanceof Error ? error.message : "接続失敗")}`, 302);
+    return redirect(workspace.slug, "connected");
+  } catch {
+    return redirect(workspace.slug, "failed");
   }
 }

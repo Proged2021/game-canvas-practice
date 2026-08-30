@@ -139,6 +139,7 @@ test("server-renders direct workspace links with saved scene content", async () 
           },
         ],
         members: [{ email: "owner@example.test", role: "owner" }],
+        invitations: [],
         confluence: null,
       },
     }),
@@ -177,6 +178,7 @@ test("preserves dashboard, workspace, back, reopen, and direct-reload navigation
       },
     ],
     members: [{ email: "owner@example.test", role: "owner" }],
+    invitations: [],
     confluence: null,
   };
   const dashboardProps = {

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `workspace_invitations_pending_unique` ON `workspace_invitations` (`workspace_id`,`email`) WHERE "workspace_invitations"."status" = 'pending';
