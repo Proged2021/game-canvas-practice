@@ -22,7 +22,9 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Redo2,
   Settings2,
+  Undo2,
   Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -46,6 +48,14 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/markdown-view";
+import {
+  createSceneHistory,
+  recordSceneEdit,
+  redoSceneEdit,
+  SceneEditSnapshot,
+  SceneHistory,
+  undoSceneEdit,
+} from "@/lib/scene-history";
 import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
 
 type Scene = {
@@ -170,9 +180,19 @@ export function WorkspaceClient({
     [sceneConfluenceUrl, setSceneConfluenceUrl] = useState(""),
     [sceneCreating, setSceneCreating] = useState(false),
     [sceneError, setSceneError] = useState("");
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTimers = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
   const latestScenes = useRef(
     new Map(initialData.scenes.map((scene) => [scene.id, scene])),
+  );
+  const [sceneHistories, setSceneHistories] = useState(
+    new Map<string, SceneHistory>(
+      initialData.scenes.map((scene) => [
+        scene.id,
+        createSceneHistory({ title: scene.title, markdown: scene.markdown }),
+      ]),
+    ),
   );
   const savingSceneIds = useRef(new Set<string>());
   const queuedSceneIds = useRef(new Set<string>());
@@ -189,6 +209,12 @@ export function WorkspaceClient({
       latestScenes.current = new Map(
         d.scenes.map((scene) => [scene.id, scene]),
       );
+      setSceneHistories(new Map(
+        d.scenes.map((scene) => [
+          scene.id,
+          createSceneHistory({ title: scene.title, markdown: scene.markdown }),
+        ]),
+      ));
       setData(d);
       setSelectedId((id) =>
         id && d.scenes.some((scene) => scene.id === id)
@@ -213,6 +239,13 @@ export function WorkspaceClient({
       removeEventListener("offline", no);
     };
   }, [load]);
+  useEffect(
+    () => () => {
+      for (const timer of saveTimers.current.values()) clearTimeout(timer);
+      saveTimers.current.clear();
+    },
+    [],
+  );
   useEffect(() => {
     fetch(`/api/workspaces/${slug}/confluence/status`, { cache: "no-store" })
       .then(async (response) => response.ok ? response.json() as Promise<ConfluenceStatus> : null)
@@ -326,23 +359,52 @@ export function WorkspaceClient({
       if (shouldFlush) {
         const next = latestScenes.current.get(snapshot.id);
         if (next) queueMicrotask(() => void save(next));
-      } else if (allowQueuedSave && savingSceneIds.current.size === 0) {
+      } else if (
+        allowQueuedSave &&
+        savingSceneIds.current.size === 0 &&
+        saveTimers.current.size === 0
+      ) {
         setSaveState("saved");
       }
     }
   }
-  function updateScene(patch: Partial<Scene>) {
-    if (!active || !editable) return;
-    const next = { ...active, ...patch };
+  function scheduleSave(scene: Scene) {
+    const previousTimer = saveTimers.current.get(scene.id);
+    if (previousTimer) clearTimeout(previousTimer);
+    const timer = setTimeout(() => {
+      saveTimers.current.delete(scene.id);
+      const latest = latestScenes.current.get(scene.id);
+      if (latest) void save(latest);
+    }, 900);
+    saveTimers.current.set(scene.id, timer);
+  }
+  function applySceneSnapshot(sceneId: string, snapshot: SceneEditSnapshot) {
+    const current = latestScenes.current.get(sceneId);
+    if (!current) return;
+    const next = { ...current, ...snapshot };
     latestScenes.current.set(next.id, next);
     setData((p) =>
       p
-        ? { ...p, scenes: p.scenes.map((s) => (s.id === active.id ? next : s)) }
+        ? { ...p, scenes: p.scenes.map((s) => (s.id === sceneId ? next : s)) }
         : p,
     );
     setSaveState("dirty");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => save(next), 900);
+    scheduleSave(next);
+  }
+  function updateScene(patch: Partial<Scene>) {
+    if (!active || !editable || !editMode) return;
+    const current = latestScenes.current.get(active.id) ?? active;
+    const currentSnapshot = { title: current.title, markdown: current.markdown };
+    const nextSnapshot = { ...currentSnapshot, ...patch };
+    const history =
+      sceneHistories.get(active.id) ?? createSceneHistory(currentSnapshot);
+    const groupKey = Object.keys(patch).sort().join(":");
+    setSceneHistories((previous) => {
+      const next = new Map(previous);
+      next.set(active.id, recordSceneEdit(history, nextSnapshot, groupKey));
+      return next;
+    });
+    applySceneSnapshot(active.id, nextSnapshot);
   }
   function openSceneDialog() {
     setSceneTitle("");
@@ -372,6 +434,17 @@ export function WorkspaceClient({
       };
       if (!response.ok) throw new Error(result.error);
       latestScenes.current.set(result.scene.id, result.scene);
+      setSceneHistories((previous) => {
+        const next = new Map(previous);
+        next.set(
+          result.scene.id,
+          createSceneHistory({
+            title: result.scene.title,
+            markdown: result.scene.markdown,
+          }),
+        );
+        return next;
+      });
       setData((previous) =>
         previous
           ? { ...previous, scenes: [...previous.scenes, result.scene] }
@@ -456,6 +529,63 @@ export function WorkspaceClient({
       setSyncing(false);
     }
   }
+  const activeHistory = active ? sceneHistories.get(active.id) : null;
+  const historyBlocked = saveState === "saving" || saveState === "conflict";
+  const canUndo = Boolean(
+    editMode && editable && activeHistory?.past.length && !historyBlocked,
+  );
+  const canRedo = Boolean(
+    editMode && editable && activeHistory?.future.length && !historyBlocked,
+  );
+  const performUndo = useCallback(() => {
+    if (!active || !editable || !editMode || historyBlocked) return false;
+    const history = sceneHistories.get(active.id);
+    if (!history) return false;
+    const next = undoSceneEdit(history);
+    if (!next) return false;
+    setSceneHistories((previous) => {
+      const updated = new Map(previous);
+      updated.set(active.id, next);
+      return updated;
+    });
+    applySceneSnapshot(active.id, next.present);
+    return true;
+  }, [active, applySceneSnapshot, editMode, editable, historyBlocked, sceneHistories]);
+  const performRedo = useCallback(() => {
+    if (!active || !editable || !editMode || historyBlocked) return false;
+    const history = sceneHistories.get(active.id);
+    if (!history) return false;
+    const next = redoSceneEdit(history);
+    if (!next) return false;
+    setSceneHistories((previous) => {
+      const updated = new Map(previous);
+      updated.set(active.id, next);
+      return updated;
+    });
+    applySceneSnapshot(active.id, next.present);
+    return true;
+  }, [active, applySceneSnapshot, editMode, editable, historyBlocked, sceneHistories]);
+  useEffect(() => {
+    function onHistoryShortcut(event: KeyboardEvent) {
+      if (!editMode || !editable || !event.ctrlKey || event.altKey) return;
+      const key = event.key.toLowerCase();
+      const isUndo = key === "z" && !event.shiftKey;
+      const isRedo = key === "y" || (key === "z" && event.shiftKey);
+      if (!isUndo && !isRedo) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.matches("input, textarea, [contenteditable='true']") &&
+        !target.closest("[data-scene-editor='true']")
+      )
+        return;
+      event.preventDefault();
+      if (isUndo) performUndo();
+      else performRedo();
+    }
+    document.addEventListener("keydown", onHistoryShortcut);
+    return () => document.removeEventListener("keydown", onHistoryShortcut);
+  }, [editMode, editable, performRedo, performUndo]);
   if (!data)
     return (
       <main className="loading-screen">
@@ -490,6 +620,34 @@ export function WorkspaceClient({
           </div>
         </div>
         <div className="workspace-actions">
+          {editMode && editable && (
+            <div className="history-actions" aria-label="編集履歴">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={performUndo}
+                disabled={!canUndo}
+                title="戻る (Ctrl+Z)"
+                aria-label="戻る"
+              >
+                <Undo2 size={15} />
+                <span>戻る</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={performRedo}
+                disabled={!canRedo}
+                title="進める (Ctrl+Y / Ctrl+Shift+Z)"
+                aria-label="進める"
+              >
+                <Redo2 size={15} />
+                <span>進める</span>
+              </Button>
+            </div>
+          )}
           <span className={`connection ${online ? "is-online" : "is-offline"}`}>
             {online ? <Cloud size={15} /> : <CloudOff size={15} />}
             {online ? "接続中" : "オフライン"}
@@ -744,6 +902,7 @@ export function WorkspaceClient({
               <>
                 <div className="editor-heading">
                   <input
+                    data-scene-editor="true"
                     value={active.title}
                     onChange={(e) => updateScene({ title: e.target.value })}
                     readOnly={!editMode || !editable}
@@ -759,6 +918,7 @@ export function WorkspaceClient({
                 >
                   {editMode && editable ? (
                     <Textarea
+                      data-scene-editor="true"
                       value={active.markdown}
                       onChange={(e) =>
                         updateScene({ markdown: e.target.value })
