@@ -148,6 +148,9 @@ test("server-renders direct workspace links with saved scene content", async () 
   assert.match(html, /テスト1場面/);
   assert.match(html, /# 保存済みMarkdown/);
   assert.match(html, /href="\/"/);
+  assert.match(html, /href="\/api\/workspaces\/workspace-06908b60-3df\/confluence\/start"/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noopener noreferrer"/);
   assert.doesNotMatch(html, /ワークスペースを読み込んでいます/);
 });
 

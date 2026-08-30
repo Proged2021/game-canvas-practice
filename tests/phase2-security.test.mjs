@@ -13,8 +13,20 @@ test("OAuth status is secret-safe and uses the exact production callback", async
   assert.match(confluence, /"unconfigured" \| "available" \| "connected" \| "reauth_required"/);
   assert.doesNotMatch(status, /clientSecret|access_token|refresh_token/);
   assert.match(start, /getRandomValues\(new Uint8Array\(32\)\)/);
-  assert.match(start, /read:page:confluence offline_access|CONFLUENCE_SCOPES/);
+  assert.match(start, /export async function GET/);
+  assert.match(start, /Response\.redirect\(url\.toString\(\), 302\)/);
+  assert.match(start, /buildAtlassianAuthorizeUrl/);
   assert.match(start, /Confluence連携は未設定です/);
+});
+
+test("OAuth starts from a native new-tab link instead of an embedded-frame navigation", async () => {
+  const client = await read("components/workspace-client.tsx");
+  assert.match(client, /href=\{`\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start`\}/);
+  assert.match(client, /target="_blank"/);
+  assert.match(client, /rel="noopener noreferrer"/);
+  assert.match(client, /aria-label="Atlassian OAuth接続を新しいタブで開く"/);
+  assert.doesNotMatch(client, /location\.href\s*=\s*d\.url/);
+  assert.doesNotMatch(client, /fetch\(`\/api\/workspaces\/\$\{slug\}\/confluence\/start`/);
 });
 
 test("OAuth callback consumes state once and validates expiry, user, owner and cancellation", async () => {

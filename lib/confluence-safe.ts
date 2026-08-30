@@ -1,5 +1,19 @@
 import sanitizeHtml from "sanitize-html";
 
+export function buildAtlassianAuthorizeUrl(clientId: string, redirectUri: string, state: string) {
+  const url = new URL("https://auth.atlassian.com/authorize");
+  url.search = new URLSearchParams({
+    audience: "api.atlassian.com",
+    client_id: clientId,
+    scope: "read:page:confluence offline_access",
+    redirect_uri: redirectUri,
+    state,
+    response_type: "code",
+    prompt: "consent",
+  }).toString();
+  return url;
+}
+
 export function parseConfluencePage(input: string) {
   const trimmed = input.trim();
   if (/^\d{1,30}$/.test(trimmed)) return { pageId: trimmed, originalUrl: null };

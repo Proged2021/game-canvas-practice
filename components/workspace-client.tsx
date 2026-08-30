@@ -82,6 +82,25 @@ const CONFLUENCE_STATUS_LABELS: Record<ConfluenceStatus["state"], string> = {
   connected: "接続済み",
   reauth_required: "再認証が必要",
 };
+
+function ConfluenceConnectLink({ slug, configured }: { slug: string; configured?: boolean }) {
+  if (configured === false) {
+    return <Button disabled><Link2 size={16} />Confluence連携は未設定</Button>;
+  }
+  return (
+    <Button asChild>
+      <a
+        href={`/api/workspaces/${encodeURIComponent(slug)}/confluence/start`}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Atlassian OAuth接続を新しいタブで開く"
+      >
+        <Link2 size={16} />
+        Atlassianに接続
+      </a>
+    </Button>
+  );
+}
 export type WorkspaceData = {
   workspace: {
     name: string;
@@ -360,17 +379,6 @@ export function WorkspaceClient({
     if (!r.ok) return setInviteError(d.error ?? "招待を取り消せませんでした");
     setData((p) => p ? { ...p, invitations: p.invitations.filter((item) => item.id !== id) } : p);
   }
-  async function connect() {
-    const r = await fetch(`/api/workspaces/${slug}/confluence/start`, {
-      method: "POST",
-    });
-    const d = (await r.json()) as ({ error?: string; url?: string } & Partial<ConfluenceStatus>);
-    if (!r.ok || !d.url) {
-      if (typeof d.configured === "boolean") setConfluenceStatus(d as ConfluenceStatus);
-      return setError(d.error ?? "Confluence接続を開始できませんでした");
-    }
-    location.href = d.url;
-  }
   async function sync() {
     setSyncing(true);
     const r = await fetch(`/api/workspaces/${slug}/confluence/sync`, {
@@ -562,10 +570,7 @@ export function WorkspaceClient({
                     {!data.confluence?.connected && !confluenceStatus?.configured && <p>Confluence連携は未設定です。次のSecretsを設定してください。</p>}
                   </div>
                   {!data.confluence?.connected && (
-                    <Button onClick={connect} disabled={confluenceStatus?.configured === false}>
-                      <Link2 size={16} />
-                      Atlassianに接続
-                    </Button>
+                    <ConfluenceConnectLink slug={slug} configured={confluenceStatus?.configured} />
                   )}
                   {data.confluence?.connected && data.confluence?.last_error?.includes("再認証") && <p className="form-error">再認証が必要です</p>}
                   <div className="oauth-public-info">
@@ -636,10 +641,7 @@ export function WorkspaceClient({
                 <h3>Confluenceページを接続</h3>
                 <p>画像・リンク・書式を保った読み取り専用本文を表示します。</p>
                 {data.workspace.role === "owner" && (
-                  <Button onClick={connect} disabled={confluenceStatus?.configured === false}>
-                    <Link2 size={16} />
-                    {confluenceStatus?.configured === false ? "Confluence連携は未設定" : "Atlassianに接続"}
-                  </Button>
+                  <ConfluenceConnectLink slug={slug} configured={confluenceStatus?.configured} />
                 )}
               </div>
             )}
