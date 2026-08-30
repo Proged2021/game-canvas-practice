@@ -13,7 +13,7 @@ export async function requireApiUser() {
       ),
     } as const;
   const authorizedUser = await authorizeApplicationUser(user);
-  if (!authorizedUser)
+  if (!authorizedUser.ok)
     return {
       ok: false,
       response: Response.json(
@@ -21,7 +21,7 @@ export async function requireApiUser() {
         { status: 403 },
       ),
     } as const;
-  return { ok: true, user: authorizedUser } as const;
+  return { ok: true, user: authorizedUser.user } as const;
 }
 
 export async function authorizeWorkspace(slug: string, allowed?: Role[]) {

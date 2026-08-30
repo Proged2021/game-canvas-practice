@@ -8,9 +8,9 @@ import {
 } from "../lib/chatgpt-identity.ts";
 import {
   authorizationEmail,
-  INITIAL_ALLOWED_ACCOUNT_USER_ID,
   INITIAL_ALLOWED_USER_EMAIL,
   isInitialAllowedUser,
+  maskEmail,
 } from "../lib/access-policy.ts";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
@@ -36,27 +36,17 @@ test("requires the authenticated email header and optionally captures the stable
 
   const identified = parseChatGPTUserHeaders(new Headers({
     "oai-authenticated-user-email": "masked-owner@example.test",
-    "oai-authenticated-user-id": ` ${INITIAL_ALLOWED_ACCOUNT_USER_ID.toUpperCase()} `,
+    "oai-authenticated-user-id": " AUTHENTICATED-USER-123 ",
   }));
-  assert.equal(identified?.userId, INITIAL_ALLOWED_ACCOUNT_USER_ID);
+  assert.equal(identified?.userId, "authenticated-user-123");
 });
 
 test("initial application access is limited to the configured owner email", () => {
   assert.equal(INITIAL_ALLOWED_USER_EMAIL, "naoki.takehara111@gmail.com");
   assert.equal(isInitialAllowedUser(" NAOKI.TAKEHARA111@GMAIL.COM "), true);
-  assert.equal(
-    isInitialAllowedUser("masked-owner@example.test", INITIAL_ALLOWED_ACCOUNT_USER_ID),
-    true,
-  );
-  assert.equal(
-    authorizationEmail("masked-owner@example.test", INITIAL_ALLOWED_ACCOUNT_USER_ID),
-    INITIAL_ALLOWED_USER_EMAIL,
-  );
+  assert.equal(authorizationEmail(" Owner@Example.Test "), "owner@example.test");
   assert.equal(isInitialAllowedUser("visitor@example.test"), false);
-  assert.equal(
-    isInitialAllowedUser("visitor@example.test", "different-authenticated-user"),
-    false,
-  );
+  assert.equal(maskEmail("naoki.takehara111@gmail.com"), "n***1@gmail.com");
 });
 
 test("builds only dispatch-owned, same-origin sign-in and sign-out paths", () => {
@@ -91,6 +81,9 @@ test("authenticated but unapproved users receive a data-free access denied scree
   assert.match(access, /FROM members/);
   assert.match(access, /FROM workspace_invitations/);
   assert.match(access, /status = 'pending'/);
+  assert.match(landing, /diagnostics\.maskedEmail/);
+  assert.match(landing, /diagnostics\.userIdHashPrefix/);
+  assert.match(landing, /diagnostics\.reasonCode/);
   assert.doesNotMatch(landing, /workspace\.slug|scenes|confluence_connections/);
 });
 
@@ -112,6 +105,22 @@ test("all workspace APIs reject missing identity before returning records", asyn
   assert.match(auth, /status: 403/);
   assert.match(auth, /await authorizeApplicationUser\(user\)/);
   assert.match(auth, /getMembership\(slug, auth\.user\.email\)/);
+  assert.doesNotMatch(auth, /diagnostics\s*:/);
+});
+
+test("denied identity diagnostics stay masked and identify the deployed runtime", async () => {
+  const [diagnostics, worker, runtime] = await Promise.all([
+    read("lib/access-diagnostics.ts"),
+    read("worker/index.ts"),
+    read("lib/runtime-version.ts"),
+  ]);
+  assert.match(diagnostics, /maskEmail\(user\.email\)/);
+  assert.match(diagnostics, /crypto\.subtle\.digest\("SHA-256"/);
+  assert.match(diagnostics, /slice\(0, 6\)/);
+  assert.match(diagnostics, /NO_MATCHING_APP_MEMBERSHIP/);
+  assert.match(runtime, /PLOTLINE_RUNTIME_VERSION = "16"/);
+  assert.match(worker, /headers\.set\("x-plotline-version", PLOTLINE_RUNTIME_VERSION\)/);
+  assert.doesNotMatch(diagnostics, /console\.|Response\.json/);
 });
 
 test("workspace pages and list queries cannot expose uninvited records", async () => {

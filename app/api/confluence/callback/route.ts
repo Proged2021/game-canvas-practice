@@ -25,7 +25,10 @@ export async function GET(request: Request) {
   if (!workspace) return safeRootRedirect("state-invalid");
 
   const identity = await getChatGPTUser();
-  const user = identity ? await authorizeApplicationUser(identity) : null;
+  const authorization = identity
+    ? await authorizeApplicationUser(identity)
+    : null;
+  const user = authorization?.ok ? authorization.user : null;
   const membership = user
     ? await db().prepare("SELECT role FROM members WHERE workspace_id=?1 AND lower(email)=lower(?2)").bind(record.workspace_id, user.email).first<{ role: string }>()
     : null;

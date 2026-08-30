@@ -1,16 +1,23 @@
 import { db } from "@/lib/db";
 import type { ChatGPTUser } from "@/lib/chatgpt-identity";
 import {
+  buildAccessDiagnostics,
+  type AccessDiagnostics,
+} from "@/lib/access-diagnostics";
+import {
   authorizationEmail,
   isInitialAllowedUser,
 } from "@/lib/access-policy";
 
 export async function authorizeApplicationUser(
   user: ChatGPTUser,
-): Promise<ChatGPTUser | null> {
-  const normalizedEmail = authorizationEmail(user.email, user.userId);
-  if (isInitialAllowedUser(user.email, user.userId))
-    return { ...user, email: normalizedEmail };
+): Promise<
+  | { ok: true; user: ChatGPTUser }
+  | { ok: false; diagnostics: AccessDiagnostics }
+> {
+  const normalizedEmail = authorizationEmail(user.email);
+  if (isInitialAllowedUser(user.email))
+    return { ok: true, user: { ...user, email: normalizedEmail } };
 
   const access = await db()
     .prepare(
@@ -26,5 +33,8 @@ export async function authorizeApplicationUser(
     .bind(normalizedEmail)
     .first<{ allowed: number }>();
 
-  return access ? { ...user, email: normalizedEmail } : null;
+  if (access)
+    return { ok: true, user: { ...user, email: normalizedEmail } };
+
+  return { ok: false, diagnostics: await buildAccessDiagnostics(user) };
 }

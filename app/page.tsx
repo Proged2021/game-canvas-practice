@@ -16,12 +16,17 @@ export default async function Home() {
   if (!user)
     return <LoginLanding signInPath={chatGPTSignInPath("/")} />;
   const authorizedUser = await authorizeApplicationUser(user);
-  if (!authorizedUser)
-    return <AccessDeniedLanding signOutPath={chatGPTSignOutPath("/")} />;
-  const initialWorkspaces = await listWorkspaces(authorizedUser.email);
+  if (!authorizedUser.ok)
+    return (
+      <AccessDeniedLanding
+        signOutPath={chatGPTSignOutPath("/")}
+        diagnostics={authorizedUser.diagnostics}
+      />
+    );
+  const initialWorkspaces = await listWorkspaces(authorizedUser.user.email);
   return (
     <DashboardClient
-      user={authorizedUser}
+      user={authorizedUser.user}
       signOutPath={chatGPTSignOutPath("/")}
       initialWorkspaces={initialWorkspaces}
     />

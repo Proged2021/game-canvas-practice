@@ -7,8 +7,9 @@ export const dynamic = "force-dynamic";
 export default async function WorkspacePage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const identity = await requireChatGPTUser(`/w/${slug}`);
-  const user = await authorizeApplicationUser(identity);
-  if (!user) notFound();
+  const authorization = await authorizeApplicationUser(identity);
+  if (!authorization.ok) notFound();
+  const user = authorization.user;
   const membership = await getMembership(slug, user.email);
   if (!membership) notFound();
   const initialData = await loadWorkspaceData(membership, user);
