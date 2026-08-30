@@ -1,5 +1,5 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
-import { hasApplicationAccess } from "@/lib/application-access";
+import { authorizeApplicationUser } from "@/lib/application-access";
 import { getMembership, type Role } from "@/lib/db";
 
 export async function requireApiUser() {
@@ -12,7 +12,8 @@ export async function requireApiUser() {
         { status: 401 },
       ),
     } as const;
-  if (!(await hasApplicationAccess(user.email)))
+  const authorizedUser = await authorizeApplicationUser(user);
+  if (!authorizedUser)
     return {
       ok: false,
       response: Response.json(
@@ -20,7 +21,7 @@ export async function requireApiUser() {
         { status: 403 },
       ),
     } as const;
-  return { ok: true, user } as const;
+  return { ok: true, user: authorizedUser } as const;
 }
 
 export async function authorizeWorkspace(slug: string, allowed?: Role[]) {

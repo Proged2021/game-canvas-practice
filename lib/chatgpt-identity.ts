@@ -2,9 +2,11 @@ export type ChatGPTUser = {
   displayName: string;
   email: string;
   fullName: string | null;
+  userId: string | null;
 };
 
 const USER_EMAIL_HEADER = "oai-authenticated-user-email";
+const USER_ID_HEADER = "oai-authenticated-user-id";
 const USER_FULL_NAME_HEADER = "oai-authenticated-user-full-name";
 const USER_FULL_NAME_ENCODING_HEADER =
   "oai-authenticated-user-full-name-encoding";
@@ -30,7 +32,15 @@ export function parseChatGPTUserHeaders(
     displayName: fullName ?? email,
     email,
     fullName,
+    userId: normalizeUserId(requestHeaders.get(USER_ID_HEADER)),
   };
+}
+
+function normalizeUserId(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && /^[a-z0-9][a-z0-9-]{5,127}$/.test(normalized)
+    ? normalized
+    : null;
 }
 
 export function chatGPTSignInPath(returnTo: string): string {

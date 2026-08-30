@@ -1,4 +1,5 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { authorizeApplicationUser } from "@/lib/application-access";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { CONFLUENCE_CALLBACK_URL, exchangeCode } from "@/lib/confluence";
@@ -23,7 +24,8 @@ export async function GET(request: Request) {
   const workspace = await db().prepare("SELECT slug, owner_email FROM workspaces WHERE id=?1").bind(record.workspace_id).first<{ slug: string; owner_email: string }>();
   if (!workspace) return safeRootRedirect("state-invalid");
 
-  const user = await getChatGPTUser();
+  const identity = await getChatGPTUser();
+  const user = identity ? await authorizeApplicationUser(identity) : null;
   const membership = user
     ? await db().prepare("SELECT role FROM members WHERE workspace_id=?1 AND lower(email)=lower(?2)").bind(record.workspace_id, user.email).first<{ role: string }>()
     : null;

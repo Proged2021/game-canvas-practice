@@ -19,7 +19,7 @@ test("dashboard exposes both workspace creation entry points", async () => {
   assert.doesNotMatch(source, /from "next\/link"/);
   assert.match(source, /<a[\s\S]*href=\{`\/w\/\$\{item\.slug\}`\}/);
   assert.match(source, /aria-label=\{`\$\{item\.name\}を開く`\}/);
-  assert.match(page, /await listWorkspaces\(user\.email\)/);
+  assert.match(page, /await listWorkspaces\(authorizedUser\.email\)/);
   assert.match(page, /initialWorkspaces=\{initialWorkspaces\}/);
 });
 
