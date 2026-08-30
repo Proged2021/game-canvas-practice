@@ -8,6 +8,7 @@ import {
 } from "../lib/chatgpt-identity.ts";
 import {
   authorizationEmail,
+  INITIAL_OWNER_WORKSPACE_SLUG,
   INITIAL_ALLOWED_USER_EMAIL,
   isInitialAllowedUser,
   maskEmail,
@@ -43,6 +44,7 @@ test("requires the authenticated email header and optionally captures the stable
 
 test("initial application access is limited to the configured owner email", () => {
   assert.equal(INITIAL_ALLOWED_USER_EMAIL, "naoki.takehara111@gmail.com");
+  assert.equal(INITIAL_OWNER_WORKSPACE_SLUG, "workspace-06908b60-3df");
   assert.equal(isInitialAllowedUser(" NAOKI.TAKEHARA111@GMAIL.COM "), true);
   assert.equal(authorizationEmail(" Owner@Example.Test "), "owner@example.test");
   assert.equal(isInitialAllowedUser("visitor@example.test"), false);
@@ -104,7 +106,7 @@ test("all workspace APIs reject missing identity before returning records", asyn
   assert.match(auth, /status: 401/);
   assert.match(auth, /status: 403/);
   assert.match(auth, /await authorizeApplicationUser\(user\)/);
-  assert.match(auth, /getMembership\(slug, auth\.user\.email\)/);
+  assert.match(auth, /resolveWorkspaceMembership\(slug, auth\.user\)/);
   assert.doesNotMatch(auth, /diagnostics\s*:/);
 });
 
@@ -118,7 +120,7 @@ test("denied identity diagnostics stay masked and identify the deployed runtime"
   assert.match(diagnostics, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(diagnostics, /slice\(0, 6\)/);
   assert.match(diagnostics, /NO_MATCHING_APP_MEMBERSHIP/);
-  assert.match(runtime, /PLOTLINE_RUNTIME_VERSION = "17"/);
+  assert.match(runtime, /PLOTLINE_RUNTIME_VERSION = "18"/);
   assert.match(worker, /headers\.set\("x-plotline-version", PLOTLINE_RUNTIME_VERSION\)/);
   assert.doesNotMatch(diagnostics, /console\.|Response\.json/);
 });
@@ -126,13 +128,29 @@ test("denied identity diagnostics stay masked and identify the deployed runtime"
 test("exact owner email repairs owner membership before shared authorization", async () => {
   const access = await read("lib/application-access.ts");
   assert.match(access, /const isExactInitialOwner = isInitialAllowedUser\(user\.email\)/);
-  assert.match(access, /if \(isExactInitialOwner\)\s+await ensureInitialOwnerMembership\(normalizedEmail\)/);
+  assert.match(access, /if \(isExactInitialOwner\) \{[\s\S]*await ensureInitialOwnerMembership\(normalizedEmail\);[\s\S]*return \{ ok: true/);
   assert.match(access, /WHERE lower\(trim\(w\.owner_email\)\) = \?1/);
+  assert.match(access, /AND w\.slug = \?2/);
   assert.match(access, /INSERT INTO members \(workspace_id, email, role, invited_by\)/);
   assert.match(access, /ON CONFLICT\(workspace_id, email\) DO UPDATE SET/);
   assert.match(access, /role = 'owner'/);
   assert.match(access, /OWNER_MEMBERSHIP_REPAIR_FAILED/);
   assert.doesNotMatch(access, /userId.*isInitialAllowedUser|first.*owner/i);
+});
+
+test("workspace pages, APIs and OAuth callback share the same membership resolver", async () => {
+  const [auth, page, callback, access] = await Promise.all([
+    read("lib/auth.ts"),
+    read("app/w/[slug]/page.tsx"),
+    read("app/api/confluence/callback/route.ts"),
+    read("lib/application-access.ts"),
+  ]);
+  assert.match(auth, /resolveWorkspaceMembership\(slug, auth\.user\)/);
+  assert.match(page, /resolveWorkspaceMembership\(slug, user\)/);
+  assert.match(callback, /resolveWorkspaceMembership\(workspace\.slug, user\)/);
+  assert.match(access, /slug !== INITIAL_OWNER_WORKSPACE_SLUG/);
+  assert.match(access, /!isInitialAllowedUser\(user\.email\)/);
+  assert.match(access, /return workspace \? \{ \.\.\.workspace, role: "owner" \} : null/);
 });
 
 test("workspace pages and list queries cannot expose uninvited records", async () => {

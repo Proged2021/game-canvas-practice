@@ -1,4 +1,5 @@
 export const INITIAL_ALLOWED_USER_EMAIL = "naoki.takehara111@gmail.com";
+export const INITIAL_OWNER_WORKSPACE_SLUG = "workspace-06908b60-3df";
 
 export function authorizationEmail(email: string): string {
   return email.trim().toLowerCase();

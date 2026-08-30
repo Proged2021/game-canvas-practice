@@ -1,5 +1,8 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
-import { authorizeApplicationUser } from "@/lib/application-access";
+import {
+  authorizeApplicationUser,
+  resolveWorkspaceMembership,
+} from "@/lib/application-access";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { CONFLUENCE_CALLBACK_URL, exchangeCode } from "@/lib/confluence";
@@ -30,7 +33,7 @@ export async function GET(request: Request) {
     : null;
   const user = authorization?.ok ? authorization.user : null;
   const membership = user
-    ? await db().prepare("SELECT role FROM members WHERE workspace_id=?1 AND lower(email)=lower(?2)").bind(record.workspace_id, user.email).first<{ role: string }>()
+    ? await resolveWorkspaceMembership(workspace.slug, user)
     : null;
   const validation = validateOAuthStateContext(record, workspace, user?.email ?? null, membership?.role ?? null);
   // Do not disclose a workspace path when the callback has no matching authenticated owner.

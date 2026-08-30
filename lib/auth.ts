@@ -1,6 +1,9 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
-import { authorizeApplicationUser } from "@/lib/application-access";
-import { getMembership, type Role } from "@/lib/db";
+import {
+  authorizeApplicationUser,
+  resolveWorkspaceMembership,
+} from "@/lib/application-access";
+import type { Role } from "@/lib/db";
 
 export async function requireApiUser() {
   const user = await getChatGPTUser();
@@ -27,7 +30,7 @@ export async function requireApiUser() {
 export async function authorizeWorkspace(slug: string, allowed?: Role[]) {
   const auth = await requireApiUser();
   if (!auth.ok) return auth;
-  const membership = await getMembership(slug, auth.user.email);
+  const membership = await resolveWorkspaceMembership(slug, auth.user);
   if (!membership)
     return {
       ok: false,
