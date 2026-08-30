@@ -5,10 +5,14 @@ import test from "node:test";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("OAuth status is secret-safe and uses the exact production callback", async () => {
-  const [confluence, status, start] = await Promise.all([read("lib/confluence.ts"), read("app/api/workspaces/[slug]/confluence/status/route.ts"), read("app/api/workspaces/[slug]/confluence/start/route.ts")]);
+  const [urls, confluence, status, start, callback] = await Promise.all([read("lib/site-urls.ts"), read("lib/confluence.ts"), read("app/api/workspaces/[slug]/confluence/status/route.ts"), read("app/api/workspaces/[slug]/confluence/start/route.ts"), read("app/api/confluence/callback/route.ts")]);
   assert.match(confluence, /ATLASSIAN_CLIENT_ID/);
   assert.match(confluence, /ATLASSIAN_CLIENT_SECRET/);
-  assert.match(confluence, /game-design-workspace\.naoki-takehara111\.chatgpt\.site\/api\/confluence\/callback/);
+  assert.match(urls, /SITE_ORIGIN = "https:\/\/game-canvas\.app"/);
+  assert.match(urls, /CONFLUENCE_CALLBACK_URL = `\$\{SITE_ORIGIN\}\/api\/confluence\/callback`/);
+  assert.match(confluence, /redirectUri: CONFLUENCE_CALLBACK_URL/);
+  assert.match(confluence, /redirect_uri: config\.redirectUri/);
+  assert.match(callback, /new URL\(CONFLUENCE_CALLBACK_URL\)\.origin/);
   assert.match(status, /publicConfluenceStatus/);
   assert.match(confluence, /"unconfigured" \| "available" \| "connected" \| "reauth_required"/);
   assert.doesNotMatch(status, /clientSecret|access_token|refresh_token/);
@@ -17,10 +21,14 @@ test("OAuth status is secret-safe and uses the exact production callback", async
   assert.match(start, /Response\.redirect\(url\.toString\(\), 302\)/);
   assert.match(start, /buildAtlassianAuthorizeUrl/);
   assert.match(start, /Confluence連携は未設定です/);
+  assert.doesNotMatch(`${urls}\n${confluence}\n${status}\n${start}\n${callback}`, /game-design-workspace\.naoki-takehara111\.chatgpt\.site/);
 });
 
 test("OAuth starts from a native new-tab link instead of an embedded-frame navigation", async () => {
   const client = await read("components/workspace-client.tsx");
+  const urls = await read("lib/site-urls.ts");
+  assert.match(client, /import \{ CONFLUENCE_CALLBACK_URL, SITE_ORIGIN \} from "@\/lib\/site-urls"/);
+  assert.match(urls, /https:\/\/game-canvas\.app/);
   assert.match(client, /authStartUrl = `\$\{SITE_ORIGIN\}\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start`/);
   assert.match(client, /href=\{authStartUrl\}/);
   assert.match(client, /target="_blank"/);

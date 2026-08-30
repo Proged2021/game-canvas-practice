@@ -1,9 +1,9 @@
 import { env } from "cloudflare:workers";
 import { db } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
+import { CONFLUENCE_CALLBACK_URL } from "@/lib/site-urls";
 export { atlassianError, extractPageId, parseConfluencePage, sanitizeConfluenceHtml } from "@/lib/confluence-safe";
-
-export const CONFLUENCE_CALLBACK_URL = "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback";
+export { CONFLUENCE_CALLBACK_URL } from "@/lib/site-urls";
 export const CONFLUENCE_SCOPES = "read:page:confluence offline_access";
 export type ConfluencePublicState = "unconfigured" | "available" | "connected" | "reauth_required";
 

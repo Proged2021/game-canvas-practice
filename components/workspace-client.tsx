@@ -46,6 +46,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/markdown-view";
+import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
 
 type Scene = {
   id: string;
@@ -82,8 +83,6 @@ const CONFLUENCE_STATUS_LABELS: Record<ConfluenceStatus["state"], string> = {
   connected: "接続済み",
   reauth_required: "再認証が必要",
 };
-const SITE_ORIGIN = "https://game-design-workspace.naoki-takehara111.chatgpt.site";
-
 function ConfluenceConnectLink({ slug, configured }: { slug: string; configured?: boolean }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const authStartUrl = `${SITE_ORIGIN}/api/workspaces/${encodeURIComponent(slug)}/confluence/start`;
@@ -600,7 +599,7 @@ export function WorkspaceClient({
                     <div className="copy-row"><code>ATLASSIAN_CLIENT_ID</code><Button type="button" size="sm" variant="outline" aria-label="Client IDのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_ID")}><Copy size={14} />コピー</Button></div>
                     <div className="copy-row"><code>ATLASSIAN_CLIENT_SECRET</code><Button type="button" size="sm" variant="outline" aria-label="Client SecretのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_SECRET")}><Copy size={14} />コピー</Button></div>
                     <strong>Callback URL</strong>
-                    <div className="copy-row"><code>{confluenceStatus?.callbackUrl ?? "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback"}</code><Button type="button" size="sm" variant="outline" aria-label="Callback URLをコピー" onClick={() => navigator.clipboard.writeText(confluenceStatus?.callbackUrl ?? "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback")}><Copy size={14} />コピー</Button></div>
+                    <div className="copy-row"><code>{confluenceStatus?.callbackUrl ?? CONFLUENCE_CALLBACK_URL}</code><Button type="button" size="sm" variant="outline" aria-label="Callback URLをコピー" onClick={() => navigator.clipboard.writeText(confluenceStatus?.callbackUrl ?? CONFLUENCE_CALLBACK_URL)}><Copy size={14} />コピー</Button></div>
                     <ol className="setup-steps">
                       <li>Atlassian Developer ConsoleでOAuth 2.0 (3LO)アプリを作成します。</li>
                       <li>AuthorizationのCallback URLへ上記URLを完全一致で登録します。</li>

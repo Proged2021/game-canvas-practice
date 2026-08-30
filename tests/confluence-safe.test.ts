@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { atlassianError, buildAtlassianAuthorizeUrl, parseConfluencePage, sanitizeConfluenceHtml } from "../lib/confluence-safe.ts";
+import { CONFLUENCE_CALLBACK_URL } from "../lib/site-urls.ts";
 
 test("builds the Atlassian authorization redirect without exposing a client secret", () => {
-  const url = buildAtlassianAuthorizeUrl("public-client-id", "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback", "opaque-state");
+  const url = buildAtlassianAuthorizeUrl("public-client-id", CONFLUENCE_CALLBACK_URL, "opaque-state");
   assert.equal(url.origin, "https://auth.atlassian.com");
   assert.equal(url.pathname, "/authorize");
   assert.equal(url.searchParams.get("client_id"), "public-client-id");
-  assert.equal(url.searchParams.get("redirect_uri"), "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback");
+  assert.equal(url.searchParams.get("redirect_uri"), "https://game-canvas.app/api/confluence/callback");
   assert.equal(url.searchParams.get("state"), "opaque-state");
   assert.deepEqual(new Set(url.searchParams.get("scope")?.split(" ")), new Set(["read:page:confluence", "offline_access"]));
   assert.equal(url.searchParams.has("client_secret"), false);
