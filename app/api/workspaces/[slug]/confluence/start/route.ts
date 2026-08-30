@@ -11,6 +11,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
   const { slug } = await params;
   const auth = await authorizeWorkspace(slug, ["owner"]);
   if (!auth.ok) return auth.response;
+  const publicStatus = publicConfluenceStatus(false);
+  if (!publicStatus.configured)
+    return Response.json({ error: "Confluence連携は未設定です", ...publicStatus }, { status: 503 });
   try {
     const { clientId, redirectUri } = oauthConfig();
     const state = secureState();
@@ -22,6 +25,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
     url.search = new URLSearchParams({ audience: "api.atlassian.com", client_id: clientId, scope: CONFLUENCE_SCOPES, redirect_uri: redirectUri, state, response_type: "code", prompt: "consent" }).toString();
     return Response.json({ url: url.toString() });
   } catch {
-    return Response.json({ error: "Confluence連携は未設定です", ...publicConfluenceStatus(false) }, { status: 503 });
+    return Response.json({ error: "Confluence接続の準備中に問題が発生しました", ...publicStatus }, { status: 500 });
   }
 }

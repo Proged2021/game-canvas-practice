@@ -2,8 +2,7 @@ import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { CONFLUENCE_CALLBACK_URL, exchangeCode } from "@/lib/confluence";
-
-type StateRecord = { workspace_id: string; user_email: string; expires_at: string };
+import { validateOAuthStateContext, type OAuthStateRecord } from "@/lib/oauth-state";
 
 function redirect(slug: string, result: string) {
   return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/w/${encodeURIComponent(slug)}?confluence=${result}`, 302);
@@ -15,17 +14,17 @@ export async function GET(request: Request) {
   if (!state) return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/?confluence=state-invalid`, 302);
 
   // DELETE ... RETURNING makes every recognized state single-use, including failed and cancelled callbacks.
-  const record = await db().prepare("DELETE FROM oauth_states WHERE state=?1 RETURNING workspace_id, user_email, expires_at").bind(state).first<StateRecord>();
+  const record = await db().prepare("DELETE FROM oauth_states WHERE state=?1 RETURNING workspace_id, user_email, expires_at").bind(state).first<OAuthStateRecord>();
   if (!record) return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/?confluence=state-invalid`, 302);
   const workspace = await db().prepare("SELECT slug, owner_email FROM workspaces WHERE id=?1").bind(record.workspace_id).first<{ slug: string; owner_email: string }>();
   if (!workspace) return Response.redirect(`${new URL(CONFLUENCE_CALLBACK_URL).origin}/?confluence=state-invalid`, 302);
-  if (Date.parse(record.expires_at) <= Date.now()) return redirect(workspace.slug, "state-expired");
 
   const user = await getChatGPTUser();
-  if (!user || record.user_email.toLowerCase() !== user.email.toLowerCase() || workspace.owner_email.toLowerCase() !== user.email.toLowerCase())
-    return redirect(workspace.slug, "owner-mismatch");
-  const membership = await db().prepare("SELECT role FROM members WHERE workspace_id=?1 AND lower(email)=lower(?2)").bind(record.workspace_id, user.email).first<{ role: string }>();
-  if (membership?.role !== "owner") return redirect(workspace.slug, "owner-mismatch");
+  const membership = user
+    ? await db().prepare("SELECT role FROM members WHERE workspace_id=?1 AND lower(email)=lower(?2)").bind(record.workspace_id, user.email).first<{ role: string }>()
+    : null;
+  const validation = validateOAuthStateContext(record, workspace, user?.email ?? null, membership?.role ?? null);
+  if (validation !== "ok") return redirect(workspace.slug, validation);
   if (url.searchParams.get("error")) return redirect(workspace.slug, "cancelled");
   const code = url.searchParams.get("code");
   if (!code) return redirect(workspace.slug, "failed");
@@ -37,7 +36,7 @@ export async function GET(request: Request) {
     });
     if (!resourcesResponse.ok) throw new Error("site-lookup");
     const resources = await resourcesResponse.json() as Array<{ id: string; url: string; scopes: string[] }>;
-    const resource = resources.find((item) => item.scopes.includes("read:page:confluence"));
+    const resource = resources.find((item) => item.scopes.includes("read:page:confluence") && /^https:\/\/[^/]+\.atlassian\.net\/?$/i.test(item.url));
     if (!resource) return redirect(workspace.slug, "no-resource");
     await db().prepare(`INSERT INTO confluence_connections
       (workspace_id, cloud_id, cloud_url, access_token_ciphertext, refresh_token_ciphertext, token_expires_at, updated_by)

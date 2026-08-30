@@ -68,11 +68,19 @@ type Confluence = {
   last_error?: string;
 } | null;
 type ConfluenceStatus = {
+  state: "unconfigured" | "available" | "connected" | "reauth_required";
   configured: boolean;
   connected: boolean;
   callbackUrl: string;
   requiredSecrets: string[];
   tokenEncryptionConfigured: boolean;
+};
+
+const CONFLUENCE_STATUS_LABELS: Record<ConfluenceStatus["state"], string> = {
+  unconfigured: "未設定",
+  available: "接続可能",
+  connected: "接続済み",
+  reauth_required: "再認証が必要",
 };
 export type WorkspaceData = {
   workspace: {
@@ -550,7 +558,7 @@ export function WorkspaceClient({
                     </DialogDescription>
                   </DialogHeader>
                   <div className="connection-state" role="status">
-                    <strong>{data.confluence?.connected && data.confluence?.last_error?.includes("再認証") ? "再認証が必要" : data.confluence?.connected ? "接続済み" : confluenceStatus === null ? "設定を確認中" : confluenceStatus.configured ? "接続可能" : "未設定"}</strong>
+                    <strong>{confluenceStatus ? CONFLUENCE_STATUS_LABELS[confluenceStatus.state] : "設定を確認中"}</strong>
                     {!data.confluence?.connected && !confluenceStatus?.configured && <p>Confluence連携は未設定です。次のSecretsを設定してください。</p>}
                   </div>
                   {!data.confluence?.connected && (
@@ -562,11 +570,17 @@ export function WorkspaceClient({
                   {data.confluence?.connected && data.confluence?.last_error?.includes("再認証") && <p className="form-error">再認証が必要です</p>}
                   <div className="oauth-public-info">
                     <strong>必要なSecret名</strong>
-                    <code>ATLASSIAN_CLIENT_ID</code>
-                    <code>ATLASSIAN_CLIENT_SECRET</code>
+                    <div className="copy-row"><code>ATLASSIAN_CLIENT_ID</code><Button type="button" size="sm" variant="outline" aria-label="Client IDのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_ID")}><Copy size={14} />コピー</Button></div>
+                    <div className="copy-row"><code>ATLASSIAN_CLIENT_SECRET</code><Button type="button" size="sm" variant="outline" aria-label="Client SecretのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_SECRET")}><Copy size={14} />コピー</Button></div>
                     <strong>Callback URL</strong>
                     <div className="copy-row"><code>{confluenceStatus?.callbackUrl ?? "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback"}</code><Button type="button" size="sm" variant="outline" aria-label="Callback URLをコピー" onClick={() => navigator.clipboard.writeText(confluenceStatus?.callbackUrl ?? "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback")}><Copy size={14} />コピー</Button></div>
-                    <p>設定後、オーナーがAtlassianへ接続し、対象ページURLを入力して同期します。</p>
+                    <ol className="setup-steps">
+                      <li>Atlassian Developer ConsoleでOAuth 2.0 (3LO)アプリを作成します。</li>
+                      <li>AuthorizationのCallback URLへ上記URLを完全一致で登録します。</li>
+                      <li>PermissionsでConfluenceのread:page:confluenceを追加します。</li>
+                      <li>SiteのSecretsへ上記2項目を登録し、再デプロイします。</li>
+                      <li>オーナーが「Atlassianに接続」を押し、対象ページを同期します。</li>
+                    </ol>
                   </div>
                   <Input
                     value={pageInput}

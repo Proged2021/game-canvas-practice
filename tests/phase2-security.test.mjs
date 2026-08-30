@@ -10,6 +10,7 @@ test("OAuth status is secret-safe and uses the exact production callback", async
   assert.match(confluence, /ATLASSIAN_CLIENT_SECRET/);
   assert.match(confluence, /game-design-workspace\.naoki-takehara111\.chatgpt\.site\/api\/confluence\/callback/);
   assert.match(status, /publicConfluenceStatus/);
+  assert.match(confluence, /"unconfigured" \| "available" \| "connected" \| "reauth_required"/);
   assert.doesNotMatch(status, /clientSecret|access_token|refresh_token/);
   assert.match(start, /getRandomValues\(new Uint8Array\(32\)\)/);
   assert.match(start, /read:page:confluence offline_access|CONFLUENCE_SCOPES/);
@@ -17,11 +18,12 @@ test("OAuth status is secret-safe and uses the exact production callback", async
 });
 
 test("OAuth callback consumes state once and validates expiry, user, owner and cancellation", async () => {
-  const callback = await read("app/api/confluence/callback/route.ts");
+  const [callback, validation] = await Promise.all([read("app/api/confluence/callback/route.ts"), read("lib/oauth-state.ts")]);
   assert.match(callback, /DELETE FROM oauth_states WHERE state=\?1 RETURNING/);
-  assert.match(callback, /Date\.parse\(record\.expires_at\) <= Date\.now\(\)/);
-  assert.match(callback, /record\.user_email\.toLowerCase\(\) !== user\.email\.toLowerCase\(\)/);
-  assert.match(callback, /membership\?\.role !== "owner"/);
+  assert.match(callback, /validateOAuthStateContext/);
+  assert.match(validation, /Date\.parse\(record\.expires_at\)/);
+  assert.match(validation, /record\.user_email\.toLowerCase\(\) !== currentUserEmail\.toLowerCase\(\)/);
+  assert.match(validation, /membershipRole !== "owner"/);
   assert.match(callback, /url\.searchParams\.get\("error"\)/);
   assert.match(callback, /accessible-resources/);
   assert.doesNotMatch(callback, /token\.access_token[^\n]*Response\.json/);

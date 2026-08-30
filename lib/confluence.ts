@@ -5,6 +5,7 @@ export { atlassianError, extractPageId, parseConfluencePage, sanitizeConfluenceH
 
 export const CONFLUENCE_CALLBACK_URL = "https://game-design-workspace.naoki-takehara111.chatgpt.site/api/confluence/callback";
 export const CONFLUENCE_SCOPES = "read:page:confluence offline_access";
+export type ConfluencePublicState = "unconfigured" | "available" | "connected" | "reauth_required";
 
 type Connection = {
   workspace_id: string; cloud_id: string; cloud_url: string;
@@ -25,9 +26,17 @@ export function confluenceConfiguration() {
   };
 }
 
-export function publicConfluenceStatus(connected = false) {
+export function publicConfluenceStatus(connected = false, reauthRequired = false) {
   const config = confluenceConfiguration();
+  const state: ConfluencePublicState = !config.configured
+    ? "unconfigured"
+    : reauthRequired
+      ? "reauth_required"
+      : connected
+        ? "connected"
+        : "available";
   return {
+    state,
     configured: config.configured,
     connected,
     callbackUrl: CONFLUENCE_CALLBACK_URL,
@@ -76,8 +85,11 @@ export async function getConnection(workspaceId: string) {
   return db().prepare("SELECT * FROM confluence_connections WHERE workspace_id=?1").bind(workspaceId).first<Connection>();
 }
 
-export async function hasConfluenceConnection(workspaceId: string) {
-  const row = await db().prepare("SELECT CASE WHEN access_token_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS connected FROM confluence_connections WHERE workspace_id=?1")
-    .bind(workspaceId).first<{ connected: number }>();
-  return Boolean(row?.connected);
+export async function getConfluenceConnectionState(workspaceId: string) {
+  const row = await db().prepare("SELECT CASE WHEN access_token_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS connected, last_error FROM confluence_connections WHERE workspace_id=?1")
+    .bind(workspaceId).first<{ connected: number; last_error: string | null }>();
+  return {
+    connected: Boolean(row?.connected),
+    reauthRequired: Boolean(row?.last_error?.includes("再認証")),
+  };
 }

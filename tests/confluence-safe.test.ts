@@ -8,6 +8,8 @@ test("validates Confluence page IDs and URLs strictly", () => {
   assert.equal(parseConfluencePage("https://evil.example/wiki/pages/123"), null);
   assert.equal(parseConfluencePage("https://team.atlassian.net/wiki/spaces/A/pages/not-a-number"), null);
   assert.equal(parseConfluencePage("https://user:pass@team.atlassian.net/wiki/pages/123"), null);
+  assert.equal(parseConfluencePage("https://team.atlassian.net:8443/wiki/pages/123"), null);
+  assert.equal(parseConfluencePage("https://team.atlassian.net/not-wiki/pages/123"), null);
   assert.equal(parseConfluencePage("https://team.atlassian.net/wiki/spaces/A/pages/123/title")?.pageId, "123");
 });
 
@@ -19,6 +21,7 @@ test("sanitizes view HTML and preserves safe structure and relative resources", 
   assert.match(clean, /<table>/);
   assert.match(clean, /href="https:\/\/team\.atlassian\.net\/wiki\/x"/);
   assert.match(clean, /src="https:\/\/team\.atlassian\.net\/img\.png"/);
+  assert.doesNotMatch(sanitizeConfluenceHtml(`<img src="data:image/png;base64,AAAA"><a href="data:text/html,bad">bad</a>`, "https://team.atlassian.net/wiki/"), /data:/i);
 });
 
 test("maps mocked Atlassian statuses to safe Japanese messages", () => {

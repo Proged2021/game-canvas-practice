@@ -5,7 +5,7 @@ export function parseConfluencePage(input: string) {
   if (/^\d{1,30}$/.test(trimmed)) return { pageId: trimmed, originalUrl: null };
   try {
     const url = new URL(trimmed);
-    if (url.protocol !== "https:" || url.username || url.password || !url.hostname.endsWith(".atlassian.net")) return null;
+    if (url.protocol !== "https:" || url.username || url.password || url.port || !url.hostname.endsWith(".atlassian.net") || !url.pathname.startsWith("/wiki/")) return null;
     const match = url.pathname.match(/\/pages\/(\d{1,30})(?:\/|$)/) ?? url.search.match(/[?&]pageId=(\d{1,30})(?:&|$)/);
     return match ? { pageId: match[1], originalUrl: url.toString() } : null;
   } catch { return null; }
@@ -13,8 +13,13 @@ export function parseConfluencePage(input: string) {
 
 export function extractPageId(input: string) { return parseConfluencePage(input)?.pageId ?? null; }
 
-function absolute(value: string, base: string) {
-  try { return new URL(value, base).toString(); } catch { return ""; }
+function absolute(value: string, base: string, image = false) {
+  try {
+    const url = new URL(value, base);
+    if (url.protocol === "https:" || url.protocol === "http:") return url.toString();
+    if (!image && url.protocol === "mailto:") return url.toString();
+    return "";
+  } catch { return ""; }
 }
 
 export function sanitizeConfluenceHtml(html: string, baseUrl: string) {
@@ -30,7 +35,7 @@ export function sanitizeConfluenceHtml(html: string, baseUrl: string) {
     disallowedTagsMode: "discard",
     transformTags: {
       a: (_tag, attrs) => ({ tagName: "a", attribs: { ...attrs, href: absolute(attrs.href ?? "", baseUrl), target: "_blank", rel: "noopener noreferrer" } }),
-      img: (_tag, attrs) => ({ tagName: "img", attribs: { ...attrs, src: absolute(attrs.src ?? "", baseUrl), loading: "lazy" } }),
+      img: (_tag, attrs) => ({ tagName: "img", attribs: { ...attrs, src: absolute(attrs.src ?? "", baseUrl, true), loading: "lazy" } }),
     },
   });
 }
