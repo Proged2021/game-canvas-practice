@@ -7,19 +7,23 @@ export type AccessDiagnostics = {
   maskedEmail: string;
   userIdClaimPresent: boolean;
   userIdHashPrefix: string | null;
-  reasonCode: "NO_MATCHING_APP_MEMBERSHIP";
+  reasonCode:
+    | "NO_MATCHING_APP_MEMBERSHIP"
+    | "OWNER_MEMBERSHIP_REPAIR_FAILED";
   runtimeVersion: string;
 };
 
 export async function buildAccessDiagnostics(
   user: ChatGPTUser,
+  reasonCode: AccessDiagnostics["reasonCode"] =
+    "NO_MATCHING_APP_MEMBERSHIP",
 ): Promise<AccessDiagnostics> {
   return {
     emailClaimPresent: Boolean(user.email),
     maskedEmail: maskEmail(user.email),
     userIdClaimPresent: Boolean(user.userId),
     userIdHashPrefix: user.userId ? await sha256Prefix(user.userId) : null,
-    reasonCode: "NO_MATCHING_APP_MEMBERSHIP",
+    reasonCode,
     runtimeVersion: PLOTLINE_RUNTIME_VERSION,
   };
 }

@@ -118,9 +118,21 @@ test("denied identity diagnostics stay masked and identify the deployed runtime"
   assert.match(diagnostics, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(diagnostics, /slice\(0, 6\)/);
   assert.match(diagnostics, /NO_MATCHING_APP_MEMBERSHIP/);
-  assert.match(runtime, /PLOTLINE_RUNTIME_VERSION = "16"/);
+  assert.match(runtime, /PLOTLINE_RUNTIME_VERSION = "17"/);
   assert.match(worker, /headers\.set\("x-plotline-version", PLOTLINE_RUNTIME_VERSION\)/);
   assert.doesNotMatch(diagnostics, /console\.|Response\.json/);
+});
+
+test("exact owner email repairs owner membership before shared authorization", async () => {
+  const access = await read("lib/application-access.ts");
+  assert.match(access, /const isExactInitialOwner = isInitialAllowedUser\(user\.email\)/);
+  assert.match(access, /if \(isExactInitialOwner\)\s+await ensureInitialOwnerMembership\(normalizedEmail\)/);
+  assert.match(access, /WHERE lower\(trim\(w\.owner_email\)\) = \?1/);
+  assert.match(access, /INSERT INTO members \(workspace_id, email, role, invited_by\)/);
+  assert.match(access, /ON CONFLICT\(workspace_id, email\) DO UPDATE SET/);
+  assert.match(access, /role = 'owner'/);
+  assert.match(access, /OWNER_MEMBERSHIP_REPAIR_FAILED/);
+  assert.doesNotMatch(access, /userId.*isInitialAllowedUser|first.*owner/i);
 });
 
 test("workspace pages and list queries cannot expose uninvited records", async () => {

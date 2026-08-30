@@ -16,8 +16,9 @@ export async function authorizeApplicationUser(
   | { ok: false; diagnostics: AccessDiagnostics }
 > {
   const normalizedEmail = authorizationEmail(user.email);
-  if (isInitialAllowedUser(user.email))
-    return { ok: true, user: { ...user, email: normalizedEmail } };
+  const isExactInitialOwner = isInitialAllowedUser(user.email);
+  if (isExactInitialOwner)
+    await ensureInitialOwnerMembership(normalizedEmail);
 
   const access = await db()
     .prepare(
@@ -36,5 +37,52 @@ export async function authorizeApplicationUser(
   if (access)
     return { ok: true, user: { ...user, email: normalizedEmail } };
 
-  return { ok: false, diagnostics: await buildAccessDiagnostics(user) };
+  return {
+    ok: false,
+    diagnostics: await buildAccessDiagnostics(
+      user,
+      isExactInitialOwner
+        ? "OWNER_MEMBERSHIP_REPAIR_FAILED"
+        : "NO_MATCHING_APP_MEMBERSHIP",
+    ),
+  };
+}
+
+async function ensureInitialOwnerMembership(email: string): Promise<void> {
+  const repairNeeded = await db()
+    .prepare(
+      `SELECT 1 AS needed
+       FROM workspaces w
+       LEFT JOIN members m
+         ON m.workspace_id = w.id
+        AND lower(trim(m.email)) = ?1
+        AND m.role = 'owner'
+       WHERE lower(trim(w.owner_email)) = ?1
+         AND m.workspace_id IS NULL
+       LIMIT 1`,
+    )
+    .bind(email)
+    .first<{ needed: number }>();
+
+  if (!repairNeeded) return;
+
+  await db().batch([
+    db()
+      .prepare(
+        `UPDATE workspaces
+         SET owner_email = ?1, updated_at = CURRENT_TIMESTAMP
+         WHERE lower(trim(owner_email)) = ?1`,
+      )
+      .bind(email),
+    db()
+      .prepare(
+        `INSERT INTO members (workspace_id, email, role, invited_by)
+         SELECT id, ?1, 'owner', ?1
+         FROM workspaces
+         WHERE lower(trim(owner_email)) = ?1
+         ON CONFLICT(workspace_id, email) DO UPDATE SET
+           role = 'owner', invited_by = excluded.invited_by`,
+      )
+      .bind(email),
+  ]);
 }
