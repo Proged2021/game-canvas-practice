@@ -10,18 +10,18 @@ test("builds the Atlassian authorization redirect without exposing a client secr
   assert.equal(url.searchParams.get("client_id"), "public-client-id");
   assert.equal(url.searchParams.get("redirect_uri"), "https://game-canvas.app/api/confluence/callback");
   assert.equal(url.searchParams.get("state"), "opaque-state");
-  assert.deepEqual(new Set(url.searchParams.get("scope")?.split(" ")), new Set(["read:page:confluence", "offline_access"]));
+  assert.deepEqual(new Set(url.searchParams.get("scope")?.split(" ")), new Set(["read:page:confluence", "read:attachment:confluence", "offline_access"]));
   assert.equal(url.searchParams.has("client_secret"), false);
 });
 
 test("validates Confluence page IDs and URLs strictly", () => {
-  assert.deepEqual(parseConfluencePage("12345"), { pageId: "12345", originalUrl: null });
+  assert.deepEqual(parseConfluencePage("12345"), { pageId: "12345", originalUrl: null, shortUrl: null });
   assert.equal(parseConfluencePage("http://team.atlassian.net/wiki/spaces/A/pages/123"), null);
   assert.equal(parseConfluencePage("https://evil.example/wiki/pages/123"), null);
   assert.equal(parseConfluencePage("https://team.atlassian.net/wiki/spaces/A/pages/not-a-number"), null);
   assert.equal(parseConfluencePage("https://user:pass@team.atlassian.net/wiki/pages/123"), null);
   assert.equal(parseConfluencePage("https://team.atlassian.net:8443/wiki/pages/123"), null);
-  assert.equal(parseConfluencePage("https://team.atlassian.net/not-wiki/pages/123"), null);
+  assert.equal(parseConfluencePage("https://team.atlassian.net.evil.example/wiki/pages/123"), null);
   assert.equal(parseConfluencePage("https://team.atlassian.net/wiki/spaces/A/pages/123/title")?.pageId, "123");
 });
 

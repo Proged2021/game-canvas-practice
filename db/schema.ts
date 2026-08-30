@@ -85,11 +85,30 @@ export const confluenceConnections = sqliteTable("confluence_connections", {
   lastSyncedAt: text("last_synced_at"),
   lastCheckedAt: text("last_checked_at"),
   lastError: text("last_error"),
+  attachmentScopeGranted: integer("attachment_scope_granted").notNull().default(0),
   updatedBy: text("updated_by"),
   updatedAt: text("updated_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const confluenceAttachments = sqliteTable(
+  "confluence_attachments",
+  {
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    attachmentId: text("attachment_id").notNull(),
+    filename: text("filename").notNull(),
+    mediaType: text("media_type").notNull(),
+    fileSize: integer("file_size").notNull(),
+    downloadPath: text("download_path").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.pageId, table.attachmentId] }),
+    index("confluence_attachments_page_idx").on(table.workspaceId, table.pageId),
+  ],
+);
 
 export const oauthStates = sqliteTable("oauth_states", {
   state: text("state").primaryKey(),

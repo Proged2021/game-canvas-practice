@@ -67,6 +67,7 @@ type Confluence = {
   synced_html?: string;
   last_synced_at?: string;
   last_error?: string;
+  attachment_scope_granted?: number;
 } | null;
 type ConfluenceStatus = {
   state: "unconfigured" | "available" | "connected" | "reauth_required";
@@ -159,6 +160,10 @@ export function WorkspaceClient({
       initialData.scenes[0]?.confluence_page_url ?? "",
     ),
     [syncing, setSyncing] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<{
+    type: "progress" | "success" | "error";
+    message: string;
+  } | null>(null);
   const [confluenceStatus, setConfluenceStatus] = useState<ConfluenceStatus | null>(null);
   const [sceneDialogOpen, setSceneDialogOpen] = useState(false),
     [sceneTitle, setSceneTitle] = useState(""),
@@ -232,7 +237,13 @@ export function WorkspaceClient({
       const d = (await r.json()) as {
         hasUpdate?: boolean;
         remoteVersion?: number;
+        error?: string;
+        nextAction?: string;
       };
+      if (!r.ok) {
+        setError([d.error ?? "Confluenceの更新確認に失敗しました", d.nextAction].filter(Boolean).join(" "));
+        return;
+      }
       if (d.hasUpdate)
         setError(
           `Confluenceに新しいバージョン（v${d.remoteVersion}）があります`,
@@ -410,20 +421,40 @@ export function WorkspaceClient({
     await load();
   }
   async function sync() {
+    if (syncing) return;
     setSyncing(true);
-    const r = await fetch(`/api/workspaces/${slug}/confluence/sync`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ page: pageInput || data?.confluence?.page_id }),
-    });
-    const d = (await r.json()) as {
-      error?: string;
-      confluence: Confluence;
-    };
-    setSyncing(false);
-    if (!r.ok) return setError(d.error ?? "Confluenceを同期できませんでした");
-    setData((p) => (p ? { ...p, confluence: d.confluence } : p));
-    setError("");
+    setSyncFeedback({ type: "progress", message: "Confluenceを同期中です…" });
+    try {
+      const r = await fetch(`/api/workspaces/${slug}/confluence/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ page: pageInput || data?.confluence?.page_id }),
+      });
+      const d = await r.json().catch(() => ({})) as {
+        error?: string;
+        nextAction?: string;
+        message?: string;
+        warnings?: string[];
+        confluence?: Confluence;
+      };
+      if (!r.ok) {
+        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, d.nextAction].filter(Boolean).join(" ");
+        setSyncFeedback({ type: "error", message: detail });
+        return;
+      }
+      if (!d.confluence) {
+        setSyncFeedback({ type: "error", message: "同期結果を読み取れませんでした。ページを再読み込みしてから、もう一度お試しください。" });
+        return;
+      }
+      setData((p) => (p ? { ...p, confluence: d.confluence ?? null } : p));
+      setError("");
+      const warning = d.warnings?.length ? ` ${d.warnings.join(" ")}` : "";
+      setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${warning}` });
+    } catch {
+      setSyncFeedback({ type: "error", message: "同期APIと通信できませんでした。ネットワークを確認し、時間をおいて1回だけ再試行してください。" });
+    } finally {
+      setSyncing(false);
+    }
   }
   if (!data)
     return (
@@ -597,10 +628,10 @@ export function WorkspaceClient({
                     <strong>{confluenceStatus ? CONFLUENCE_STATUS_LABELS[confluenceStatus.state] : "設定を確認中"}</strong>
                     {!data.confluence?.connected && !confluenceStatus?.configured && <p>Confluence連携は未設定です。次のSecretsを設定してください。</p>}
                   </div>
-                  {!data.confluence?.connected && (
+                  {(!data.confluence?.connected || confluenceStatus?.state === "reauth_required") && (
                     <ConfluenceConnectLink slug={slug} configured={confluenceStatus?.configured} />
                   )}
-                  {data.confluence?.connected && data.confluence?.last_error?.includes("再認証") && <p className="form-error">再認証が必要です</p>}
+                  {confluenceStatus?.state === "reauth_required" && <p className="form-error">Atlassianの追加権限を許可して再接続してください。</p>}
                   <div className="oauth-public-info">
                     <strong>必要なSecret名</strong>
                     <div className="copy-row"><code>ATLASSIAN_CLIENT_ID</code><Button type="button" size="sm" variant="outline" aria-label="Client IDのSecret名をコピー" onClick={() => navigator.clipboard.writeText("ATLASSIAN_CLIENT_ID")}><Copy size={14} />コピー</Button></div>
@@ -610,7 +641,7 @@ export function WorkspaceClient({
                     <ol className="setup-steps">
                       <li>Atlassian Developer ConsoleでOAuth 2.0 (3LO)アプリを作成します。</li>
                       <li>AuthorizationのCallback URLへ上記URLを完全一致で登録します。</li>
-                      <li>PermissionsでConfluenceのread:page:confluenceを追加します。</li>
+                      <li>PermissionsでConfluenceのread:page:confluenceとread:attachment:confluenceを追加します。</li>
                       <li>SiteのSecretsへ上記2項目を登録し、再デプロイします。</li>
                       <li>オーナーが「Atlassianに接続」を押し、対象ページを同期します。</li>
                     </ol>
@@ -627,8 +658,16 @@ export function WorkspaceClient({
                     }
                   >
                     {syncing ? <Loader2 className="spin" /> : <RefreshCw />}
-                    同期する
+                    {syncing ? "同期中…" : "同期する"}
                   </Button>
+                  {syncFeedback && (
+                    <p className={syncFeedback.type === "error" ? "form-error" : "sync-feedback"} role={syncFeedback.type === "error" ? "alert" : "status"} aria-live="polite">
+                      {syncFeedback.type === "success" && <Check size={16} />}
+                      {syncFeedback.type === "progress" && <Loader2 size={16} className="spin" />}
+                      {syncFeedback.type === "error" && <AlertCircle size={16} />}
+                      {syncFeedback.message}
+                    </p>
+                  )}
                   {data.confluence?.last_synced_at && (
                     <p className="sync-meta">
                       最終同期:{" "}

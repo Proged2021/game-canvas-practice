@@ -62,7 +62,7 @@ test("sync uses v2 view format, safe errors and server-side token access", async
   const sync = await read("app/api/workspaces/[slug]/confluence/sync/route.ts");
   assert.match(sync, /wiki\/api\/v2\/pages/);
   assert.match(sync, /body-format=view/);
-  assert.match(sync, /atlassianError\(response\.status\)/);
+  assert.match(sync, /atlassianFailure\(response\.status\)/);
   assert.match(sync, /authorizeWorkspace\(slug, checkOnly \? undefined : \["owner", "editor"\]\)/);
 });
 

@@ -82,7 +82,7 @@ export async function loadWorkspaceData(
       .all(),
     db()
       .prepare(
-        `SELECT cloud_url, page_id, page_url, page_title, page_version, synced_html,
+        `SELECT cloud_url, page_id, page_url, page_title, page_version, synced_html, attachment_scope_granted,
       last_synced_at, last_checked_at, last_error,
       CASE WHEN access_token_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS connected
       FROM confluence_connections WHERE workspace_id = ?1`,

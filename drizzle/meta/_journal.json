@@ -36,6 +36,13 @@
       "when": 1788124573288,
       "tag": "0004_flowery_doctor_octopus",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788126500727,
+      "tag": "0005_nifty_katie_power",
+      "breakpoints": true
     }
   ]
 }

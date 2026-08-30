@@ -2,15 +2,16 @@ import { env } from "cloudflare:workers";
 import { db } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { CONFLUENCE_CALLBACK_URL } from "@/lib/site-urls";
-export { atlassianError, extractPageId, parseConfluencePage, sanitizeConfluenceHtml } from "@/lib/confluence-safe";
+export { atlassianError, extractPageId, parseConfluencePage, resolveConfluenceShortUrl, sanitizeConfluenceHtml } from "@/lib/confluence-safe";
 export { CONFLUENCE_CALLBACK_URL } from "@/lib/site-urls";
-export const CONFLUENCE_SCOPES = "read:page:confluence offline_access";
+export const CONFLUENCE_SCOPES = "read:page:confluence read:attachment:confluence offline_access";
 export type ConfluencePublicState = "unconfigured" | "available" | "connected" | "reauth_required";
 
 type Connection = {
   workspace_id: string; cloud_id: string; cloud_url: string;
   access_token_ciphertext: string; refresh_token_ciphertext: string | null;
   token_expires_at: string | null; page_id: string | null; page_version: number | null;
+  attachment_scope_granted: number;
 };
 
 export function confluenceConfiguration() {
@@ -86,10 +87,10 @@ export async function getConnection(workspaceId: string) {
 }
 
 export async function getConfluenceConnectionState(workspaceId: string) {
-  const row = await db().prepare("SELECT CASE WHEN access_token_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS connected, last_error FROM confluence_connections WHERE workspace_id=?1")
-    .bind(workspaceId).first<{ connected: number; last_error: string | null }>();
+  const row = await db().prepare("SELECT CASE WHEN access_token_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS connected, last_error, attachment_scope_granted FROM confluence_connections WHERE workspace_id=?1")
+    .bind(workspaceId).first<{ connected: number; last_error: string | null; attachment_scope_granted: number }>();
   return {
     connected: Boolean(row?.connected),
-    reauthRequired: Boolean(row?.last_error?.includes("再認証")),
+    reauthRequired: Boolean(row?.connected && (!row.attachment_scope_granted || row.last_error?.includes("再認証"))),
   };
 }
