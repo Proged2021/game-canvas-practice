@@ -100,8 +100,10 @@ export async function fetchAtlassianAttachmentBinary(
     trace.push({ status: response.status, hostCategory: category });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
-      if (!location || hop === MAX_REDIRECTS)
-        return { ok: false, code: "DOWNLOAD_REDIRECT_INVALID", status: 502, trace };
+      if (!location)
+        return { ok: false, code: "DOWNLOAD_REDIRECT_MISSING", status: 502, trace };
+      if (hop === MAX_REDIRECTS)
+        return { ok: false, code: "DOWNLOAD_REDIRECT_LIMIT", status: 502, trace };
       const next = new URL(location, current).toString();
       if (!["atlassian_media", "atl_paas_media"].includes(atlassianHostCategory(next)))
         return { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502, trace };
@@ -111,7 +113,7 @@ export async function fetchAtlassianAttachmentBinary(
     if (!response.ok) return {
       ok: false,
       code: response.status === 401 || response.status === 403 ? "ATTACHMENT_PERMISSION" : "ATTACHMENT_DOWNLOAD_FAILED",
-      status: response.status === 401 || response.status === 403 ? 403 : 502,
+      status: response.status,
       trace,
     };
     const declaredLength = Number(response.headers.get("content-length") ?? 0);

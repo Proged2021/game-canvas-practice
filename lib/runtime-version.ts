@@ -1,1 +1,1 @@
-export const PLOTLINE_RUNTIME_VERSION = "25";
+export const PLOTLINE_RUNTIME_VERSION = "26";

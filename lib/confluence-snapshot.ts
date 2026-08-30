@@ -116,7 +116,7 @@ export async function fetchConfluenceImageSnapshots(input: {
   const references = dedupeConfluenceImageReferences(input.pageId, input.representations).slice(0, 50);
   const assets: SnapshotImage[] = [];
   const failures: SnapshotFailureCode[] = [];
-  const diagnostics: Array<{ image: number; stages: ResolverStageTrace[]; final: "saved" | SnapshotFailureCode }> = [];
+  const diagnostics: Array<{ image: number; stages: ResolverStageTrace[]; final: "saved" | SnapshotFailureCode; finalCode?: string }> = [];
   let all: ConfluenceAttachmentDescriptor[] | null = null;
 
   for (const [index, reference] of references.entries()) {
@@ -126,7 +126,7 @@ export async function fetchConfluenceImageSnapshots(input: {
       const direct = await searchPageAttachmentsByFilename(input.cloudId, input.pageId, reference.filename, input.token, fetcher);
       stages.push({ stage: "v2_filename_lookup", status: direct.status, hostCategory: "oauth_gateway" });
       if (!direct.ok && direct.code === "ATTACHMENT_REAUTH_REQUIRED") {
-        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing" }); continue;
+        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing", finalCode: direct.code }); continue;
       }
       if (direct.ok) candidates = direct.attachments.filter((item) => matches(reference, item));
     }
@@ -135,7 +135,7 @@ export async function fetchConfluenceImageSnapshots(input: {
         const listed = await fetchAllPageAttachments(input.cloudId, input.pageId, input.token, fetcher);
         stages.push({ stage: "v2_attachment_list", status: listed.status ?? (listed.ok ? 200 : 502), hostCategory: "oauth_gateway" });
         if (!listed.ok && listed.code === "ATTACHMENT_REAUTH_REQUIRED") {
-          failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing" }); continue;
+          failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing", finalCode: listed.code }); continue;
         }
         all = listed.ok ? listed.attachments : [];
       }
@@ -147,14 +147,14 @@ export async function fetchConfluenceImageSnapshots(input: {
       const metadata = await fetchAttachmentMetadata(input.cloudId, input.pageId, candidate.id, input.token, fetcher);
       stages.push({ stage: "attachment_metadata", status: metadata.status, hostCategory: "oauth_gateway" });
       if (!metadata.ok && metadata.code === "ATTACHMENT_REAUTH_REQUIRED") {
-        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing" }); continue;
+        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing", finalCode: metadata.code }); continue;
       }
       if (metadata.ok) candidate = { ...candidate, ...metadata.attachment };
     }
     if (candidate && ((candidate.mediaType && !SAFE_IMAGE_MEDIA_TYPES.has(candidate.mediaType))
       || (Number.isFinite(candidate.fileSize) && candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES))) {
       const final = candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES ? "too_large" : "unsupported_mime";
-      failures.push(final); diagnostics.push({ image: index + 1, stages, final }); continue;
+      failures.push(final); diagnostics.push({ image: index + 1, stages, final, finalCode: final === "too_large" ? "ATTACHMENT_TOO_LARGE" : "ATTACHMENT_BINARY_UNSAFE" }); continue;
     }
 
     const attempts: Array<{ stage: string; url: string; attachmentId?: string }> = [];
@@ -205,7 +205,7 @@ export async function fetchConfluenceImageSnapshots(input: {
             ? "ATTACHMENT_BINARY_UNSAFE"
             : binary?.code;
       const final = attempts.length ? failureCode(decisiveCode ?? "ATTACHMENT_DOWNLOAD_FAILED") : "source_untrusted";
-      failures.push(final); diagnostics.push({ image: index + 1, stages, final }); continue;
+      failures.push(final); diagnostics.push({ image: index + 1, stages, final, finalCode: decisiveCode }); continue;
     }
     const filename = candidate?.title || reference.filename || "confluence-image";
     assets.push({

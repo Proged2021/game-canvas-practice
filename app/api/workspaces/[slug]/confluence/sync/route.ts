@@ -13,6 +13,16 @@ import {
 } from "@/lib/confluence-assets";
 import { fetchConfluenceImageSnapshots, SNAPSHOT_FAILURE_MESSAGES } from "@/lib/confluence-snapshot";
 import {
+  aggregateResolverDiagnostics,
+  diagnosticNeedsReconnect,
+  diagnosticNextAction,
+  runConfluenceCapabilityDiagnostic,
+  tokenDiagnostic,
+  withLogicalImageCount,
+  type SafeImageDiagnostic,
+} from "@/lib/confluence-diagnostics";
+import { dedupeConfluenceImageReferences } from "@/lib/confluence-snapshot";
+import {
   extractConfluenceAdfImageReferences,
   extractConfluenceHtmlImageReferences,
   extractConfluenceStorageImageReferences,
@@ -58,6 +68,16 @@ async function saveFailure(workspaceId: string, sceneId: string, failure: SyncFa
   );
 }
 
+function imageDiagnosticFailure(diagnostic: SafeImageDiagnostic): SyncFailure {
+  const reconnect = diagnosticNeedsReconnect(diagnostic);
+  return {
+    error: `Confluence画像の取得能力を確認できませんでした。診断コード: ${diagnostic.code} / ${diagnostic.stage}`,
+    nextAction: diagnosticNextAction(diagnostic),
+    code: diagnostic.code,
+    status: reconnect ? (diagnostic.httpStatus === 403 ? 403 : 409) : diagnostic.httpStatus === 429 ? 429 : 422,
+  };
+}
+
 async function diagnosticHashes(values: string[]) {
   const unique = [...new Set(values.map(normalizeConfluenceFilename).filter(Boolean))].slice(0, 20);
   return Promise.all(unique.map(async (value) => {
@@ -91,8 +111,10 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     .bind(sceneId, auth.membership.workspace_id)
     .first<{ page_id: string; page_version: number }>();
   const connection = await getConnection(auth.membership.workspace_id);
-  if (!connection?.access_token_ciphertext || !connection.cloud_id)
-    return Response.json({ error: "Confluenceが未接続です" }, { status: 409 });
+  if (!connection?.access_token_ciphertext || !connection.cloud_id) {
+    const diagnostic = tokenDiagnostic("missing");
+    return saveFailure(auth.membership.workspace_id, sceneId, imageDiagnosticFailure(diagnostic), { diagnostic });
+  }
   let parsed = input
     ? parseConfluencePage(input)
     : source?.page_id
@@ -135,19 +157,37 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       });
 
     const pageId = parsed.pageId;
-    const pageResponse = await fetch(
-      `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}?body-format=view`,
-      { headers: { authorization: `Bearer ${token}`, accept: "application/json" } },
-    );
-    if (!pageResponse.ok)
-      return saveFailure(auth.membership.workspace_id, sceneId, atlassianFailure(pageResponse.status));
-    const page = (await pageResponse.json()) as {
+    let page: {
       id: string;
       title: string;
       version: { number: number };
       body?: { view?: { value?: string }; storage?: { value?: string } };
       _links?: { webui?: string };
     };
+    let capabilityDiagnostic: SafeImageDiagnostic | null = null;
+    if (checkOnly) {
+      const pageResponse = await fetch(
+        `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}?body-format=view`,
+        { headers: { authorization: `Bearer ${token}`, accept: "application/json" } },
+      );
+      if (!pageResponse.ok)
+        return saveFailure(auth.membership.workspace_id, sceneId, atlassianFailure(pageResponse.status));
+      page = await pageResponse.json() as typeof page;
+    } else {
+      const capability = await runConfluenceCapabilityDiagnostic({
+        cloudId: connection.cloud_id,
+        cloudUrl: connection.cloud_url ?? "https://www.atlassian.com",
+        pageId,
+        token,
+      });
+      capabilityDiagnostic = capability.ok ? null : capability.diagnostic;
+      if (!("page" in capability) || !capability.page) {
+        const diagnostic = withLogicalImageCount(capability.diagnostic, 0);
+        console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);
+        return saveFailure(auth.membership.workspace_id, sceneId, imageDiagnosticFailure(diagnostic), { diagnostic });
+      }
+      page = capability.page;
+    }
     const hasUpdate = source?.page_version != null && page.version.number > source.page_version;
     if (checkOnly) {
       await db()
@@ -172,17 +212,27 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     const adfPage = adfResponse.ok ? await adfResponse.json() as { body?: { atlas_doc_format?: { value?: unknown } } } : null;
     const viewHtml = page.body?.view?.value ?? "";
     const exportHtml = exportPage?.body?.export_view?.value ?? "";
+    const representations = [
+      extractConfluenceStorageImageReferences(storageHtml),
+      extractConfluenceHtmlImageReferences(viewHtml, connection.cloud_url ?? "https://www.atlassian.com"),
+      extractConfluenceHtmlImageReferences(exportHtml, connection.cloud_url ?? "https://www.atlassian.com"),
+      extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
+    ];
+    const logicalImageCount = dedupeConfluenceImageReferences(pageId, representations).length;
+    if (capabilityDiagnostic && logicalImageCount > 0) {
+      const diagnostic = withLogicalImageCount(capabilityDiagnostic, logicalImageCount);
+      console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);
+      return saveFailure(auth.membership.workspace_id, sceneId, imageDiagnosticFailure(diagnostic), {
+        diagnostic,
+        assets: { saved: 0, failed: logicalImageCount, reasons: { [diagnostic.finalReason]: logicalImageCount } },
+      });
+    }
     const snapshots = await fetchConfluenceImageSnapshots({
       cloudId: connection.cloud_id,
       cloudUrl: connection.cloud_url ?? "https://www.atlassian.com",
       pageId,
       token,
-      representations: [
-        extractConfluenceStorageImageReferences(storageHtml),
-        extractConfluenceHtmlImageReferences(viewHtml, connection.cloud_url ?? "https://www.atlassian.com"),
-        extractConfluenceHtmlImageReferences(exportHtml, connection.cloud_url ?? "https://www.atlassian.com"),
-        extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
-      ],
+      representations,
     });
     for (const diagnostic of snapshots.diagnostics)
       console.info("CONFLUENCE_IMAGE_RESOLVER", diagnostic);
@@ -191,13 +241,15 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         result[code] = (result[code] ?? 0) + 1; return result;
       }, {});
       const messages = Object.keys(counts).map((code) => `${SNAPSHOT_FAILURE_MESSAGES[code as keyof typeof SNAPSHOT_FAILURE_MESSAGES]}（${counts[code]}件）`);
-      const scopeMissing = snapshots.failures.includes("scope_missing");
-      return saveFailure(auth.membership.workspace_id, sceneId, {
+      const diagnostic = aggregateResolverDiagnostics(snapshots.diagnostics, snapshots.references.length);
+      if (diagnostic) console.info("CONFLUENCE_IMAGE_ROOT_CAUSE", diagnostic);
+      const scopeMissing = diagnostic ? diagnosticNeedsReconnect(diagnostic) : false;
+      return saveFailure(auth.membership.workspace_id, sceneId, diagnostic ? imageDiagnosticFailure(diagnostic) : {
         error: `画像を安全に内部保存できなかったため、前回の同期結果を保持しました。${messages.join(" ")}`,
         nextAction: scopeMissing ? "「Atlassianに再接続」を押して画像権限を許可し、再同期してください。" : "時間をおいてから、もう一度同期してください。",
         code: scopeMissing ? "ATTACHMENT_REAUTH_REQUIRED" : "IMAGE_SNAPSHOT_FAILED",
         status: scopeMissing ? 409 : 422,
-      }, { assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });
+      }, { diagnostic, assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });
     }
 
     const generation = crypto.randomUUID();
@@ -288,12 +340,14 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     return Response.json({ message: "同期しました", warnings: [], assets: { saved: snapshots.assets.length, failed: 0 }, source: sceneSource });
   } catch (error) {
     const reauth = error instanceof Error && error.message === "Confluenceの再認証が必要です";
+    const diagnostic = reauth ? tokenDiagnostic("decrypt_failed") : null;
     return saveFailure(
       auth.membership.workspace_id,
       sceneId,
       reauth
-        ? { error: "Confluenceの再認証が必要です。", nextAction: "選択中の場面からAtlassianへ再接続してください。", code: "TOKEN_DECRYPT_OR_REFRESH_FAILED", status: 409 }
+        ? imageDiagnosticFailure(diagnostic!)
         : { error: "Confluenceとの通信中に問題が発生しました。", nextAction: "ネットワークを確認し、時間をおいて1回だけ再試行してください。", code: "CONFLUENCE_SYNC_FAILED", status: 502 },
+      diagnostic ? { diagnostic } : {},
     );
   }
 }

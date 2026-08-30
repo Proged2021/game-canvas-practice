@@ -560,13 +560,25 @@ export function WorkspaceClient({
         message?: string;
         warnings?: string[];
         assets?: { saved: number; failed: number; reasons?: Record<string, number> };
+        diagnostic?: {
+          code: string;
+          stage: string;
+          requestStage: string;
+          httpStatus: number | null;
+          hostCategory: string;
+          finalReason: string;
+          logicalImageCount: number;
+        };
         source?: SceneConfluenceSource;
       };
       if (!r.ok) {
         const countDetail = d.assets
           ? `画像は${d.assets.saved}件を取得・保存し、${d.assets.failed}件が失敗しました。`
           : "";
-        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, countDetail, d.nextAction].filter(Boolean).join(" ");
+        const diagnosticDetail = d.diagnostic
+          ? `診断コード: ${d.diagnostic.code} / 失敗した段階: ${d.diagnostic.stage}`
+          : "";
+        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, countDetail, diagnosticDetail, d.nextAction].filter(Boolean).join(" ");
         setSyncFeedback({ type: "error", message: detail });
         return;
       }
