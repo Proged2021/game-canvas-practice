@@ -98,6 +98,9 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     [sceneCreating, setSceneCreating] = useState(false),
     [sceneError, setSceneError] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestScenes = useRef(new Map<string, Scene>());
+  const savingSceneIds = useRef(new Set<string>());
+  const queuedSceneIds = useRef(new Set<string>());
   const active = useMemo(
     () => data?.scenes.find((s) => s.id === selectedId) ?? data?.scenes[0],
     [data, selectedId],
@@ -108,8 +111,15 @@ export function WorkspaceClient({ slug }: { slug: string }) {
       const r = await fetch(`/api/workspaces/${slug}`, { cache: "no-store" });
       const d = (await r.json()) as Data & { error?: string };
       if (!r.ok) throw new Error(d.error);
+      latestScenes.current = new Map(
+        d.scenes.map((scene) => [scene.id, scene]),
+      );
       setData(d);
-      setSelectedId((id) => id || d.scenes[0]?.id || "");
+      setSelectedId((id) =>
+        id && d.scenes.some((scene) => scene.id === id)
+          ? id
+          : d.scenes[0]?.id || "",
+      );
       setOnline(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "読み込みに失敗しました");
@@ -145,19 +155,26 @@ export function WorkspaceClient({ slug }: { slug: string }) {
   }, [data?.confluence?.connected, slug]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- The connection field follows the newly selected scene.
-    if (active?.confluence_page_url) setPageInput(active.confluence_page_url);
+    setPageInput(active?.confluence_page_url ?? "");
   }, [active?.id, active?.confluence_page_url]);
   async function save(scene: Scene) {
+    if (savingSceneIds.current.has(scene.id)) {
+      queuedSceneIds.current.add(scene.id);
+      return;
+    }
+    const snapshot = latestScenes.current.get(scene.id) ?? scene;
+    savingSceneIds.current.add(scene.id);
     setSaveState("saving");
+    let allowQueuedSave = true;
     try {
       const r = await fetch(`/api/workspaces/${slug}/scenes`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          id: scene.id,
-          title: scene.title,
-          markdown: scene.markdown,
-          baseRevision: scene.revision,
+          id: snapshot.id,
+          title: snapshot.title,
+          markdown: snapshot.markdown,
+          baseRevision: snapshot.revision,
         }),
       });
       const d = (await r.json()) as {
@@ -166,6 +183,8 @@ export function WorkspaceClient({ slug }: { slug: string }) {
         scene: Scene;
       };
       if (r.status === 409) {
+        allowQueuedSave = false;
+        queuedSceneIds.current.delete(snapshot.id);
         setSaveState("conflict");
         setError(
           `競合を検出しました。${d.current?.updated_by ?? "別のユーザー"}の更新を再読み込みしてください。`,
@@ -173,25 +192,51 @@ export function WorkspaceClient({ slug }: { slug: string }) {
         return;
       }
       if (!r.ok) throw new Error(d.error);
+      const latest = latestScenes.current.get(snapshot.id) ?? snapshot;
+      const hasNewerEdit =
+        latest.title !== snapshot.title ||
+        latest.markdown !== snapshot.markdown;
+      const merged = hasNewerEdit
+        ? {
+            ...latest,
+            revision: d.scene.revision,
+            updated_by: d.scene.updated_by,
+            updated_at: d.scene.updated_at,
+          }
+        : d.scene;
+      latestScenes.current.set(merged.id, merged);
       setData((p) =>
         p
           ? {
               ...p,
-              scenes: p.scenes.map((s) => (s.id === d.scene.id ? d.scene : s)),
+              scenes: p.scenes.map((s) => (s.id === merged.id ? merged : s)),
             }
           : p,
       );
-      setSaveState("saved");
+      if (hasNewerEdit) queuedSceneIds.current.add(snapshot.id);
       setOnline(true);
     } catch (e) {
+      allowQueuedSave = false;
+      queuedSceneIds.current.delete(snapshot.id);
       setSaveState("error");
       setOnline(false);
       setError(e instanceof Error ? e.message : "保存できませんでした");
+    } finally {
+      savingSceneIds.current.delete(snapshot.id);
+      const shouldFlush =
+        allowQueuedSave && queuedSceneIds.current.delete(snapshot.id);
+      if (shouldFlush) {
+        const next = latestScenes.current.get(snapshot.id);
+        if (next) queueMicrotask(() => void save(next));
+      } else if (allowQueuedSave && savingSceneIds.current.size === 0) {
+        setSaveState("saved");
+      }
     }
   }
   function updateScene(patch: Partial<Scene>) {
     if (!active || !editable) return;
     const next = { ...active, ...patch };
+    latestScenes.current.set(next.id, next);
     setData((p) =>
       p
         ? { ...p, scenes: p.scenes.map((s) => (s.id === active.id ? next : s)) }
@@ -228,6 +273,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
         scene: Scene;
       };
       if (!response.ok) throw new Error(result.error);
+      latestScenes.current.set(result.scene.id, result.scene);
       setData((previous) =>
         previous
           ? { ...previous, scenes: [...previous.scenes, result.scene] }
@@ -314,7 +360,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     <main className="workspace-shell">
       <header className="workspace-topbar">
         <div className="workspace-identity">
-          <Link href="/" className="icon-link">
+          <Link href="/" className="icon-link" aria-label="ダッシュボードへ戻る">
             <ArrowLeft size={18} />
           </Link>
           <span className="tiny-logo">
@@ -330,7 +376,10 @@ export function WorkspaceClient({ slug }: { slug: string }) {
             {online ? <Cloud size={15} /> : <CloudOff size={15} />}
             {online ? "接続中" : "オフライン"}
           </span>
-          <span className={`save-status save-${saveState}`}>
+          <span
+            className={`save-status save-${saveState}`}
+            aria-live="polite"
+          >
             {saveState === "saved" ? (
               <Check size={14} />
             ) : saveState === "saving" ? (
@@ -400,7 +449,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
         </div>
       </header>
       {error && (
-        <div className="error-banner">
+        <div className="error-banner" role="alert">
           <AlertCircle size={16} />
           <span>{error}</span>
           <Button
@@ -513,7 +562,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
           </div>
         </article>
         <article className="notes-pane">
-          <aside className="scene-list">
+          <aside className="scene-list" aria-label="場面一覧">
             <div className="scene-list-heading">
               <span>場面</span>
               {editable && (
@@ -525,8 +574,12 @@ export function WorkspaceClient({ slug }: { slug: string }) {
             {data.scenes.map((s, i) => (
               <button
                 key={s.id}
-                onClick={() => setSelectedId(s.id)}
+                onClick={() => {
+                  setSelectedId(s.id);
+                  setPageInput(s.confluence_page_url ?? "");
+                }}
                 className={s.id === active?.id ? "active" : ""}
+                aria-current={s.id === active?.id ? "true" : undefined}
               >
                 <span>{String(i + 1).padStart(2, "0")}</span>
                 <strong>{s.title}</strong>

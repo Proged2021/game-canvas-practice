@@ -43,3 +43,25 @@ test("scene creation exposes empty and persistent editor flows", async () => {
   assert.match(route, /INSERT INTO scenes/);
   assert.match(route, /confluence_page_url/);
 });
+
+test("editing, permissions, responsive layout, and accessibility stay guarded", async () => {
+  const [client, route, styles] = await Promise.all([
+    read("components/workspace-client.tsx"),
+    read("app/api/workspaces/[slug]/scenes/route.ts"),
+    read("app/globals.css"),
+  ]);
+
+  assert.match(client, /queuedSceneIds/);
+  assert.match(client, /aria-live="polite"/);
+  assert.match(client, /role="alert"/);
+  assert.match(client, /aria-label="編集モード"/);
+  assert.match(client, /readOnly=\{!editMode \|\| !editable\}/);
+  assert.match(client, /aria-label="Markdown本文"/);
+  assert.match(client, /aria-label="場面一覧"/);
+  assert.match(client, /aria-current=/);
+  assert.match(client, /autoFocus/);
+  assert.match(route, /authorizeWorkspace\(slug, \["owner", "editor"\]\)/);
+  assert.match(route, /この操作を行う権限がありません|場面を保存できませんでした/);
+  assert.match(styles, /@media \(max-width: 820px\)/);
+  assert.match(styles, /split-workspace[^}]*flex-direction: column/);
+});
