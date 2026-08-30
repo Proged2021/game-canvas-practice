@@ -63,6 +63,7 @@ export function DashboardClient({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- This effect intentionally starts the initial remote-data load.
     load();
   }, [load]);
 

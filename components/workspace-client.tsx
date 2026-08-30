@@ -117,6 +117,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     }
   }, [slug]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- This effect intentionally starts the initial remote-data load.
     load();
     const yes = () => setOnline(true),
       no = () => setOnline(false);
@@ -143,6 +144,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     return () => clearInterval(timer);
   }, [data?.confluence?.connected, slug]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- The connection field follows the newly selected scene.
     if (active?.confluence_page_url) setPageInput(active.confluence_page_url);
   }, [active?.id, active?.confluence_page_url]);
   async function save(scene: Scene) {
