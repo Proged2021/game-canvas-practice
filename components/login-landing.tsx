@@ -1,4 +1,4 @@
-import { LogIn, ShieldCheck, Sparkles } from "lucide-react";
+import { LogIn, LogOut, ShieldCheck, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function LoginLanding({ signInPath }: { signInPath: string }) {
@@ -26,6 +26,35 @@ export function LoginLanding({ signInPath }: { signInPath: string }) {
           </a>
         </Button>
         <small>ログイン後も、招待されていないワークスペースにはアクセスできません。</small>
+      </section>
+    </main>
+  );
+}
+
+export function AccessDeniedLanding({ signOutPath }: { signOutPath: string }) {
+  return (
+    <main className="login-shell">
+      <section className="login-card" aria-labelledby="access-denied-title">
+        <div className="brand login-brand">
+          <span className="brand-mark" aria-hidden="true">
+            <Sparkles size={17} />
+          </span>
+          <span>Plotline</span>
+        </div>
+        <div className="login-icon" aria-hidden="true">
+          <ShieldCheck size={28} />
+        </div>
+        <p className="eyebrow">ACCESS RESTRICTED</p>
+        <h1 id="access-denied-title">このアプリを利用する権限がありません</h1>
+        <p>
+          所有者または招待済みのChatGPTアカウントでログインしてください。ワークスペースの内容は表示されていません。
+        </p>
+        <Button asChild variant="outline" className="login-action">
+          <a href={signOutPath} target="_top">
+            <LogOut size={17} />
+            ChatGPTからログアウト
+          </a>
+        </Button>
       </section>
     </main>
   );

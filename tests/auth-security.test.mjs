@@ -6,6 +6,10 @@ import {
   chatGPTSignOutPath,
   parseChatGPTUserHeaders,
 } from "../lib/chatgpt-identity.ts";
+import {
+  INITIAL_ALLOWED_USER_EMAIL,
+  isInitialAllowedUser,
+} from "../lib/access-policy.ts";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -28,6 +32,12 @@ test("uses the authenticated email header as the only authentication identity", 
   assert.equal(user?.displayName, "Display Only");
 });
 
+test("initial application access is limited to the configured owner email", () => {
+  assert.equal(INITIAL_ALLOWED_USER_EMAIL, "naoki.takehara111@gmail.com");
+  assert.equal(isInitialAllowedUser(" NAOKI.TAKEHARA111@GMAIL.COM "), true);
+  assert.equal(isInitialAllowedUser("visitor@example.test"), false);
+});
+
 test("builds only dispatch-owned, same-origin sign-in and sign-out paths", () => {
   assert.equal(chatGPTSignInPath("/w/test?tab=1"), "/signin-with-chatgpt?return_to=%2Fw%2Ftest%3Ftab%3D1");
   assert.equal(chatGPTSignOutPath("/"), "/signout-with-chatgpt?return_to=%2F");
@@ -48,6 +58,21 @@ test("anonymous root renders only the login landing and starts SIWC as a top-lev
   assert.doesNotMatch(landing, /workspace\.slug|scenes|confluence_connections/);
 });
 
+test("authenticated but unapproved users receive a data-free access denied screen", async () => {
+  const [page, landing, access] = await Promise.all([
+    read("app/page.tsx"),
+    read("components/login-landing.tsx"),
+    read("lib/application-access.ts"),
+  ]);
+  assert.match(page, /await hasApplicationAccess\(user\.email\)/);
+  assert.match(page, /<AccessDeniedLanding/);
+  assert.match(landing, /このアプリを利用する権限がありません/);
+  assert.match(access, /FROM members/);
+  assert.match(access, /FROM workspace_invitations/);
+  assert.match(access, /status = 'pending'/);
+  assert.doesNotMatch(landing, /workspace\.slug|scenes|confluence_connections/);
+});
+
 test("all workspace APIs reject missing identity before returning records", async () => {
   const apiRoutes = [
     "app/api/workspaces/route.ts",
@@ -64,6 +89,7 @@ test("all workspace APIs reject missing identity before returning records", asyn
   const auth = await read("lib/auth.ts");
   assert.match(auth, /status: 401/);
   assert.match(auth, /status: 403/);
+  assert.match(auth, /await hasApplicationAccess\(user\.email\)/);
   assert.match(auth, /getMembership\(slug, auth\.user\.email\)/);
 });
 
@@ -74,6 +100,7 @@ test("workspace pages and list queries cannot expose uninvited records", async (
     read("app/api/workspaces/[slug]/route.ts"),
   ]);
   assert.match(page, /requireChatGPTUser/);
+  assert.match(page, /await hasApplicationAccess\(user\.email\)/);
   assert.match(page, /if \(!membership\) notFound\(\)/);
   assert.match(db, /JOIN members m ON m\.workspace_id = w\.id/);
   assert.match(db, /WHERE lower\(m\.email\) = lower\(\?1\)/);

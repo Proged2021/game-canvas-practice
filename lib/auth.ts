@@ -1,4 +1,5 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { hasApplicationAccess } from "@/lib/application-access";
 import { getMembership, type Role } from "@/lib/db";
 
 export async function requireApiUser() {
@@ -9,6 +10,14 @@ export async function requireApiUser() {
       response: Response.json(
         { error: "ChatGPTへのログインが必要です" },
         { status: 401 },
+      ),
+    } as const;
+  if (!(await hasApplicationAccess(user.email)))
+    return {
+      ok: false,
+      response: Response.json(
+        { error: "このアプリを利用する権限がありません" },
+        { status: 403 },
       ),
     } as const;
   return { ok: true, user } as const;
