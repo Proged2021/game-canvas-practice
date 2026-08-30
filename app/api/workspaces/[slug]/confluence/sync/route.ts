@@ -4,7 +4,7 @@ import { accessToken, extractPageId, getConnection, sanitizeConfluenceHtml } fro
 
 async function run(request: Request, slug: string, checkOnly: boolean) {
   const auth = await authorizeWorkspace(slug, checkOnly ? undefined : ["owner", "editor"]);
-  if ("response" in auth) return auth.response;
+  if (!auth.ok) return auth.response;
   const connection = await getConnection(auth.membership.workspace_id);
   if (!connection?.access_token_ciphertext || !connection.cloud_id) return Response.json({ error: "Confluenceが未接続です" }, { status: 409 });
   let input: string | undefined;

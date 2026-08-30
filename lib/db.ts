@@ -8,16 +8,22 @@ export function db(): D1Database {
 }
 
 export async function getMembership(slug: string, email: string) {
-  return db().prepare(`
+  return db()
+    .prepare(
+      `
     SELECT w.id AS workspace_id, w.slug, w.name, w.owner_email, m.role
     FROM workspaces w JOIN members m ON m.workspace_id = w.id
     WHERE w.slug = ?1 AND lower(m.email) = lower(?2)
-  `).bind(slug, email).first<{
-    workspace_id: string; slug: string; name: string; owner_email: string; role: Role;
-  }>();
+  `,
+    )
+    .bind(slug, email)
+    .first<{
+      workspace_id: string;
+      slug: string;
+      name: string;
+      owner_email: string;
+      role: Role;
+    }>();
 }
 
 export const canEdit = (role: Role) => role === "owner" || role === "editor";
-export const slugify = (value: string) => value.trim().toLowerCase()
-  .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+/g, "-")
-  .replace(/^-+|-+$/g, "").slice(0, 48) || `workspace-${crypto.randomUUID().slice(0, 8)}`;

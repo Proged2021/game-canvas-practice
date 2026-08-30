@@ -1,0 +1,1 @@
+ALTER TABLE `scenes` ADD `confluence_page_url` text;

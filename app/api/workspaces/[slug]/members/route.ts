@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 export async function POST(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const auth = await authorizeWorkspace(slug, ["owner"]);
-  if ("response" in auth) return auth.response;
+  if (!auth.ok) return auth.response;
   const body = await request.json() as { email?: string; role?: "editor" | "viewer" };
   const email = body.email?.trim().toLowerCase();
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) return Response.json({ error: "有効なメールアドレスを入力してください" }, { status: 400 });

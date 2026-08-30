@@ -6,7 +6,7 @@ import { oauthConfig } from "@/lib/confluence";
 export async function POST(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const auth = await authorizeWorkspace(slug, ["owner"]);
-  if ("response" in auth) return auth.response;
+  if (!auth.ok) return auth.response;
   try {
     const origin = new URL(request.url).origin;
     const { clientId, redirectUri } = oauthConfig(origin);
