@@ -1,22 +1,11 @@
-import { db } from "@/lib/db";
+import { db, listWorkspaces } from "@/lib/db";
 import { requireApiUser } from "@/lib/auth";
 import { validateWorkspaceCreation } from "@/lib/creation-validation";
 
 export async function GET() {
   const auth = await requireApiUser();
   if (!auth.ok) return auth.response;
-  const result = await db()
-    .prepare(
-      `
-    SELECT w.slug, w.name, w.updated_at, m.role,
-      (SELECT COUNT(*) FROM scenes s WHERE s.workspace_id = w.id) AS scene_count
-    FROM workspaces w JOIN members m ON m.workspace_id = w.id
-    WHERE lower(m.email) = lower(?1) ORDER BY w.updated_at DESC
-  `,
-    )
-    .bind(auth.user.email)
-    .all();
-  return Response.json({ workspaces: result.results });
+  return Response.json({ workspaces: await listWorkspaces(auth.user.email) });
 }
 
 export async function POST(request: Request) {

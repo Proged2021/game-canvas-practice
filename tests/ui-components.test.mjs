@@ -83,3 +83,139 @@ test("renders sidebar skeletons deterministically", async () => {
   assert.equal(first, second);
   assert.match(first, /--skeleton-width:70%/);
 });
+
+test("server-renders each saved workspace as a native accessible link", async () => {
+  const { DashboardClient } = await vite.ssrLoadModule(
+    "/components/dashboard-client.tsx",
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(DashboardClient, {
+      user: { displayName: "検証ユーザー", email: "owner@example.test" },
+      signOutPath: "/signout-with-chatgpt?return_to=%2F",
+      initialWorkspaces: [
+        {
+          slug: "workspace-06908b60-3df",
+          name: "テスト1",
+          role: "owner",
+          scene_count: 1,
+        },
+      ],
+    }),
+  );
+
+  assert.match(html, /<a[^>]*class="workspace-card"/);
+  assert.match(html, /href="\/w\/workspace-06908b60-3df"/);
+  assert.match(html, /aria-label="テスト1を開く"/);
+  assert.match(html, />テスト1</);
+  assert.match(html, />1 場面</);
+});
+
+test("server-renders direct workspace links with saved scene content", async () => {
+  const { WorkspaceClient } = await vite.ssrLoadModule(
+    "/components/workspace-client.tsx",
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(WorkspaceClient, {
+      slug: "workspace-06908b60-3df",
+      initialData: {
+        workspace: {
+          slug: "workspace-06908b60-3df",
+          name: "テスト1",
+          role: "owner",
+        },
+        currentUser: {
+          email: "owner@example.test",
+          displayName: "検証ユーザー",
+        },
+        scenes: [
+          {
+            id: "scene-1",
+            title: "テスト1場面",
+            confluence_page_url: null,
+            markdown: "# 保存済みMarkdown",
+            position: 0,
+            revision: 1,
+            updated_by: "owner@example.test",
+          },
+        ],
+        members: [{ email: "owner@example.test", role: "owner" }],
+        confluence: null,
+      },
+    }),
+  );
+
+  assert.match(html, /テスト1場面/);
+  assert.match(html, /# 保存済みMarkdown/);
+  assert.match(html, /href="\/"/);
+  assert.doesNotMatch(html, /ワークスペースを読み込んでいます/);
+});
+
+test("preserves dashboard, workspace, back, reopen, and direct-reload navigation", async () => {
+  const [{ DashboardClient }, { WorkspaceClient }] = await Promise.all([
+    vite.ssrLoadModule("/components/dashboard-client.tsx"),
+    vite.ssrLoadModule("/components/workspace-client.tsx"),
+  ]);
+  const workspace = {
+    workspace: {
+      slug: "workspace-06908b60-3df",
+      name: "テスト1",
+      role: "owner",
+    },
+    currentUser: {
+      email: "owner@example.test",
+      displayName: "検証ユーザー",
+    },
+    scenes: [
+      {
+        id: "scene-1",
+        title: "テスト1場面",
+        confluence_page_url: null,
+        markdown: "# 保存済みMarkdown",
+        position: 0,
+        revision: 1,
+        updated_by: "owner@example.test",
+      },
+    ],
+    members: [{ email: "owner@example.test", role: "owner" }],
+    confluence: null,
+  };
+  const dashboardProps = {
+    user: workspace.currentUser,
+    signOutPath: "/signout-with-chatgpt?return_to=%2F",
+    initialWorkspaces: [
+      {
+        slug: workspace.workspace.slug,
+        name: workspace.workspace.name,
+        role: "owner",
+        scene_count: 1,
+      },
+    ],
+  };
+
+  const firstDashboard = renderToStaticMarkup(
+    React.createElement(DashboardClient, dashboardProps),
+  );
+  const openedWorkspace = renderToStaticMarkup(
+    React.createElement(WorkspaceClient, {
+      slug: workspace.workspace.slug,
+      initialData: workspace,
+    }),
+  );
+  const reopenedDashboard = renderToStaticMarkup(
+    React.createElement(DashboardClient, dashboardProps),
+  );
+  const reloadedWorkspace = renderToStaticMarkup(
+    React.createElement(WorkspaceClient, {
+      slug: workspace.workspace.slug,
+      initialData: workspace,
+    }),
+  );
+
+  for (const dashboard of [firstDashboard, reopenedDashboard]) {
+    assert.match(dashboard, /href="\/w\/workspace-06908b60-3df"/);
+  }
+  assert.match(openedWorkspace, /href="\/"/);
+  assert.match(openedWorkspace, /テスト1場面/);
+  assert.match(reloadedWorkspace, /テスト1場面/);
+  assert.match(reloadedWorkspace, /# 保存済みMarkdown/);
+});

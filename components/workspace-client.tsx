@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-import Link from "next/link";
 import {
   AlertCircle,
   ArrowLeft,
@@ -67,7 +66,7 @@ type Confluence = {
   last_synced_at?: string;
   last_error?: string;
 } | null;
-type Data = {
+export type WorkspaceData = {
   workspace: {
     name: string;
     slug: string;
@@ -79,9 +78,15 @@ type Data = {
   confluence: Confluence;
 };
 
-export function WorkspaceClient({ slug }: { slug: string }) {
-  const [data, setData] = useState<Data | null>(null),
-    [selectedId, setSelectedId] = useState(""),
+export function WorkspaceClient({
+  slug,
+  initialData,
+}: {
+  slug: string;
+  initialData: WorkspaceData;
+}) {
+  const [data, setData] = useState<WorkspaceData | null>(initialData),
+    [selectedId, setSelectedId] = useState(initialData.scenes[0]?.id ?? ""),
     [editMode, setEditMode] = useState(true);
   const [saveState, setSaveState] = useState<
       "saved" | "saving" | "dirty" | "conflict" | "error"
@@ -90,7 +95,9 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     [error, setError] = useState("");
   const [inviteEmail, setInviteEmail] = useState(""),
     [inviteRole, setInviteRole] = useState("editor"),
-    [pageInput, setPageInput] = useState(""),
+    [pageInput, setPageInput] = useState(
+      initialData.scenes[0]?.confluence_page_url ?? "",
+    ),
     [syncing, setSyncing] = useState(false);
   const [sceneDialogOpen, setSceneDialogOpen] = useState(false),
     [sceneTitle, setSceneTitle] = useState(""),
@@ -98,7 +105,9 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     [sceneCreating, setSceneCreating] = useState(false),
     [sceneError, setSceneError] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestScenes = useRef(new Map<string, Scene>());
+  const latestScenes = useRef(
+    new Map(initialData.scenes.map((scene) => [scene.id, scene])),
+  );
   const savingSceneIds = useRef(new Set<string>());
   const queuedSceneIds = useRef(new Set<string>());
   const active = useMemo(
@@ -109,7 +118,7 @@ export function WorkspaceClient({ slug }: { slug: string }) {
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/workspaces/${slug}`, { cache: "no-store" });
-      const d = (await r.json()) as Data & { error?: string };
+      const d = (await r.json()) as WorkspaceData & { error?: string };
       if (!r.ok) throw new Error(d.error);
       latestScenes.current = new Map(
         d.scenes.map((scene) => [scene.id, scene]),
@@ -360,9 +369,10 @@ export function WorkspaceClient({ slug }: { slug: string }) {
     <main className="workspace-shell">
       <header className="workspace-topbar">
         <div className="workspace-identity">
-          <Link href="/" className="icon-link" aria-label="ダッシュボードへ戻る">
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- Native navigation avoids the production client-router regression. */}
+          <a href="/" className="icon-link" aria-label="ダッシュボードへ戻る">
             <ArrowLeft size={18} />
-          </Link>
+          </a>
           <span className="tiny-logo">
             <BookOpen size={15} />
           </span>

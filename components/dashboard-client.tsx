@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import {
   AlertCircle,
   BookOpen,
@@ -20,36 +19,31 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-
-type Workspace = {
-  slug: string;
-  name: string;
-  role: string;
-  scene_count: number;
-};
+import type { WorkspaceSummary } from "@/lib/db";
 
 export function DashboardClient({
   user,
   signOutPath,
+  initialWorkspaces,
 }: {
   user: { displayName: string; email: string };
   signOutPath: string;
+  initialWorkspaces: WorkspaceSummary[];
 }) {
-  const [items, setItems] = useState<Workspace[]>([]);
+  const [items, setItems] = useState<WorkspaceSummary[]>(initialWorkspaces);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const response = await fetch("/api/workspaces", { cache: "no-store" });
       const result = (await response.json()) as {
         error?: string;
-        workspaces?: Workspace[];
+        workspaces?: WorkspaceSummary[];
       };
       if (!response.ok) throw new Error(result.error);
       setItems(result.workspaces ?? []);
@@ -86,7 +80,7 @@ export function DashboardClient({
       });
       const result = (await response.json()) as {
         error?: string;
-        workspace: Workspace;
+        workspace: WorkspaceSummary;
       };
       if (!response.ok) throw new Error(result.error);
       location.assign(`/w/${result.workspace.slug}`);
@@ -142,10 +136,11 @@ export function DashboardClient({
             </div>
           ) : items.length ? (
             items.map((item) => (
-              <Link
+              <a
                 className="workspace-card"
                 key={item.slug}
                 href={`/w/${item.slug}`}
+                aria-label={`${item.name}を開く`}
               >
                 <div className="workspace-icon">
                   <BookOpen size={20} />
@@ -164,7 +159,7 @@ export function DashboardClient({
                   </p>
                 </div>
                 <ChevronRight size={19} className="card-arrow" />
-              </Link>
+              </a>
             ))
           ) : (
             <div className="empty-card">

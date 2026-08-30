@@ -5,7 +5,10 @@ import test from "node:test";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("dashboard exposes both workspace creation entry points", async () => {
-  const source = await read("components/dashboard-client.tsx");
+  const [source, page] = await Promise.all([
+    read("components/dashboard-client.tsx"),
+    read("app/page.tsx"),
+  ]);
 
   assert.match(source, /ワークスペースを作成/);
   assert.match(source, /新しいワークスペースを作成/);
@@ -13,6 +16,11 @@ test("dashboard exposes both workspace creation entry points", async () => {
   assert.match(source, /htmlFor="workspace-slug"/);
   assert.match(source, /if \(creating\) return/);
   assert.match(source, /disabled=\{creating\}/);
+  assert.doesNotMatch(source, /from "next\/link"/);
+  assert.match(source, /<a[\s\S]*href=\{`\/w\/\$\{item\.slug\}`\}/);
+  assert.match(source, /aria-label=\{`\$\{item\.name\}を開く`\}/);
+  assert.match(page, /await listWorkspaces\(user\.email\)/);
+  assert.match(page, /initialWorkspaces=\{initialWorkspaces\}/);
 });
 
 test("workspace creation persists the workspace and owner together", async () => {
@@ -27,9 +35,10 @@ test("workspace creation persists the workspace and owner together", async () =>
 });
 
 test("scene creation exposes empty and persistent editor flows", async () => {
-  const [client, route] = await Promise.all([
+  const [client, route, page] = await Promise.all([
     read("components/workspace-client.tsx"),
     read("app/api/workspaces/[slug]/scenes/route.ts"),
+    read("app/w/[slug]/page.tsx"),
   ]);
 
   assert.match(client, /最初の場面を追加/);
@@ -42,6 +51,8 @@ test("scene creation exposes empty and persistent editor flows", async () => {
   assert.match(client, /className="split-workspace"/);
   assert.match(route, /INSERT INTO scenes/);
   assert.match(route, /confluence_page_url/);
+  assert.match(page, /await loadWorkspaceData\(membership, user\)/);
+  assert.match(page, /initialData=\{initialData\}/);
 });
 
 test("editing, permissions, responsive layout, and accessibility stay guarded", async () => {
@@ -60,8 +71,10 @@ test("editing, permissions, responsive layout, and accessibility stay guarded", 
   assert.match(client, /aria-label="場面一覧"/);
   assert.match(client, /aria-current=/);
   assert.match(client, /autoFocus/);
+  assert.match(client, /<a href="\/" className="icon-link"/);
   assert.match(route, /authorizeWorkspace\(slug, \["owner", "editor"\]\)/);
   assert.match(route, /この操作を行う権限がありません|場面を保存できませんでした/);
   assert.match(styles, /@media \(max-width: 820px\)/);
   assert.match(styles, /split-workspace[^}]*flex-direction: column/);
+  assert.match(styles, /workspace-card:focus-visible/);
 });
