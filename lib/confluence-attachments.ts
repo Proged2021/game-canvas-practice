@@ -21,7 +21,7 @@ type AttachmentPage = {
   _links?: { next?: string };
 };
 
-function normalizeAttachment(item: RawAttachment, pageId: string) {
+export function normalizeAttachment(item: RawAttachment, pageId: string) {
   const id = item.id == null ? "" : String(item.id);
   const mediaType = typeof item.mediaType === "string" ? item.mediaType.toLowerCase() : "";
   const downloadLink = item.downloadLink ?? item._links?.download ?? "";
@@ -41,6 +41,24 @@ function normalizeAttachment(item: RawAttachment, pageId: string) {
   } satisfies ConfluenceAttachmentDescriptor;
 }
 
+export async function fetchAttachmentMetadata(
+  cloudId: string,
+  pageId: string,
+  attachmentId: string,
+  token: string,
+  fetcher: typeof fetch = fetch,
+) {
+  const url = `https://api.atlassian.com/ex/confluence/${encodeURIComponent(cloudId)}/wiki/api/v2/attachments/${encodeURIComponent(attachmentId)}`;
+  const response = await fetcher(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+  if (response.status === 401 || response.status === 403)
+    return { ok: false as const, status: response.status, code: "ATTACHMENT_REAUTH_REQUIRED" as const };
+  if (!response.ok) return { ok: false as const, status: response.status, code: "ATTACHMENT_METADATA_FAILED" as const };
+  const attachment = normalizeAttachment(await response.json() as RawAttachment, pageId);
+  return attachment
+    ? { ok: true as const, status: response.status, attachment }
+    : { ok: false as const, status: 502, code: "ATTACHMENT_METADATA_INVALID" as const };
+}
+
 export async function searchPageAttachmentsByFilename(
   cloudId: string,
   pageId: string,
@@ -56,6 +74,7 @@ export async function searchPageAttachmentsByFilename(
   const body = await response.json() as AttachmentPage;
   return {
     ok: true as const,
+    status: response.status,
     attachments: (Array.isArray(body.results) ? body.results : [])
       .map((item) => normalizeAttachment(item, pageId))
       .filter((item): item is ConfluenceAttachmentDescriptor => Boolean(item)),
@@ -68,6 +87,7 @@ export type AttachmentListResult =
       attachments: ConfluenceAttachmentDescriptor[];
       pages: number;
       rawCount: number;
+      status: number;
     }
   | {
       ok: false;
@@ -127,7 +147,7 @@ export async function fetchAllPageAttachments(
       if (normalized) attachments.push(normalized);
     }
     const next = body._links?.next ?? nextFromLinkHeader(response.headers.get("link"));
-    if (!next) return { ok: true, attachments, pages, rawCount };
+    if (!next) return { ok: true, attachments, pages, rawCount, status: response.status };
     const safe = safeNextUrl(next, url, gatewayBase, requiredPath);
     if (!safe) return { ok: false, status: 502, code: "ATTACHMENT_PAGINATION_UNSAFE" };
     url = safe;

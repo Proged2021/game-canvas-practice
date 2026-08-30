@@ -1,5 +1,13 @@
-import { fetchAllPageAttachments, searchPageAttachmentsByFilename } from "./confluence-attachments.ts";
-import { fetchAtlassianAttachmentBinary, validateConfluenceImageSource } from "./confluence-image.ts";
+import {
+  fetchAllPageAttachments,
+  fetchAttachmentMetadata,
+  searchPageAttachmentsByFilename,
+} from "./confluence-attachments.ts";
+import {
+  atlassianHostCategory,
+  fetchAtlassianAttachmentBinary,
+  validateConfluenceImageSource,
+} from "./confluence-image.ts";
 import {
   MAX_CONFLUENCE_IMAGE_BYTES,
   SAFE_IMAGE_MEDIA_TYPES,
@@ -9,40 +17,78 @@ import {
 } from "./confluence-safe.ts";
 
 export type SnapshotFailureCode = "scope_missing" | "source_untrusted" | "fetch_failed" | "too_large" | "unsupported_mime";
+export type ResolverStageTrace = { stage: string; status: number; hostCategory: string };
+export type LogicalConfluenceImage = ConfluenceImageReference & { sourceUrls: string[] };
 export type SnapshotImage = {
   assetKey: string;
   filename: string;
   mime: string;
   bytes: ArrayBuffer;
   sha256: string;
-  reference: ConfluenceImageReference;
+  reference: LogicalConfluenceImage;
 };
 
-function uniqueReferences(representations: ConfluenceImageReference[][]) {
-  const result: ConfluenceImageReference[] = [];
-  const seen = new Set<string>();
+function downloadPathKey(value: string | undefined, pageId: string) {
+  if (!value) return "";
+  try {
+    const path = decodeURIComponent(new URL(value, "https://invalid.local").pathname).normalize("NFKC").toLocaleLowerCase("en-US");
+    return new RegExp(`/(?:wiki/)?download/attachments/${pageId}(?:/|$)`, "i").test(path) ? path : "";
+  } catch { return ""; }
+}
+
+function referenceKeys(reference: ConfluenceImageReference, pageId: string) {
+  return [
+    reference.attachmentId ? `attachment:${reference.attachmentId}` : "",
+    reference.fileId ? `file:${reference.fileId}` : "",
+    reference.normalizedFilename ? `filename:${pageId}:${reference.normalizedFilename}` : "",
+    downloadPathKey(reference.sourceUrl, pageId) ? `path:${pageId}:${downloadPathKey(reference.sourceUrl, pageId)}` : "",
+  ].filter(Boolean);
+}
+
+export function dedupeConfluenceImageReferences(pageId: string, representations: ConfluenceImageReference[][]) {
+  const groups: Array<LogicalConfluenceImage & { keys: Set<string> }> = [];
   for (const reference of representations.flat()) {
-    const key = reference.attachmentId || reference.fileId || reference.normalizedFilename || reference.sourceUrl || "";
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(reference);
+    const keys = referenceKeys(reference, pageId);
+    if (!keys.length) continue;
+    let group = groups.find((candidate) => keys.some((key) => candidate.keys.has(key)));
+    if (!group) {
+      group = { ...reference, sourceUrls: [], keys: new Set() };
+      groups.push(group);
+    }
+    for (const key of keys) group.keys.add(key);
+    group.attachmentId ||= reference.attachmentId;
+    group.fileId ||= reference.fileId;
+    if (!group.filename && reference.filename) {
+      group.filename = reference.filename;
+      group.normalizedFilename = reference.normalizedFilename;
+    }
+    if (reference.sourceUrl && !group.sourceUrls.includes(reference.sourceUrl)) group.sourceUrls.push(reference.sourceUrl);
+    // 後から得た強い識別子を既存のfilename/pathグループにも伝播させる。
+    for (const key of referenceKeys(group, pageId)) group.keys.add(key);
   }
-  return result;
+  return groups.map((group) => ({
+    filename: group.filename,
+    normalizedFilename: group.normalizedFilename,
+    attachmentId: group.attachmentId,
+    fileId: group.fileId,
+    sourceUrl: group.sourceUrl,
+    sourceUrls: group.sourceUrls,
+  }));
 }
 
 function names(item: ConfluenceAttachmentDescriptor) {
   return new Set([item.title, item.fileName].filter(Boolean).map((value) => normalizeConfluenceFilename(value!)));
 }
 
-function matches(reference: ConfluenceImageReference, item: ConfluenceAttachmentDescriptor) {
+function matches(reference: LogicalConfluenceImage, item: ConfluenceAttachmentDescriptor) {
   return item.id === reference.attachmentId
     || Boolean(item.fileId && (item.fileId === reference.fileId || item.fileId === reference.attachmentId))
     || Boolean(reference.normalizedFilename && names(item).has(reference.normalizedFilename));
 }
 
-function gatewayDownloadUrl(cloudId: string, link: string) {
-  if (/^https:\/\//i.test(link)) return link;
-  return `https://api.atlassian.com/ex/confluence/${encodeURIComponent(cloudId)}${link.startsWith("/") ? link : `/${link}`}`;
+function metadataDownloadUrl(cloudId: string, pageId: string, link: string, cloudUrl: string) {
+  const absolute = /^https:\/\//i.test(link) ? link : new URL(link, cloudUrl).toString();
+  return validateConfluenceImageSource(absolute, cloudUrl, cloudId, pageId);
 }
 
 function failureCode(code: string): SnapshotFailureCode {
@@ -67,56 +113,100 @@ export async function fetchConfluenceImageSnapshots(input: {
   fetcher?: typeof fetch;
 }) {
   const fetcher = input.fetcher ?? fetch;
-  const references = uniqueReferences(input.representations).slice(0, 50);
+  const references = dedupeConfluenceImageReferences(input.pageId, input.representations).slice(0, 50);
   const assets: SnapshotImage[] = [];
   const failures: SnapshotFailureCode[] = [];
+  const diagnostics: Array<{ image: number; stages: ResolverStageTrace[]; final: "saved" | SnapshotFailureCode }> = [];
   let all: ConfluenceAttachmentDescriptor[] | null = null;
 
-  for (const reference of references) {
+  for (const [index, reference] of references.entries()) {
+    const stages: ResolverStageTrace[] = [];
     let candidates: ConfluenceAttachmentDescriptor[] = [];
     if (reference.filename) {
-      const direct = await searchPageAttachmentsByFilename(
-        input.cloudId, input.pageId, reference.filename, input.token, fetcher,
-      );
+      const direct = await searchPageAttachmentsByFilename(input.cloudId, input.pageId, reference.filename, input.token, fetcher);
+      stages.push({ stage: "v2_filename_lookup", status: direct.status, hostCategory: "oauth_gateway" });
       if (!direct.ok && direct.code === "ATTACHMENT_REAUTH_REQUIRED") {
-        failures.push("scope_missing"); continue;
+        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing" }); continue;
       }
       if (direct.ok) candidates = direct.attachments.filter((item) => matches(reference, item));
     }
     if (!candidates.length) {
       if (!all) {
         const listed = await fetchAllPageAttachments(input.cloudId, input.pageId, input.token, fetcher);
+        stages.push({ stage: "v2_attachment_list", status: listed.status ?? (listed.ok ? 200 : 502), hostCategory: "oauth_gateway" });
         if (!listed.ok && listed.code === "ATTACHMENT_REAUTH_REQUIRED") {
-          failures.push("scope_missing"); continue;
+          failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing" }); continue;
         }
         all = listed.ok ? listed.attachments : [];
       }
       candidates = all.filter((item) => matches(reference, item));
     }
 
-    const candidate = candidates[0];
-    if (candidate && (!SAFE_IMAGE_MEDIA_TYPES.has(candidate.mediaType) || candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES)) {
-      failures.push(candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES ? "too_large" : "unsupported_mime");
-      continue;
+    let candidate = candidates[0];
+    if (candidate?.id) {
+      const metadata = await fetchAttachmentMetadata(input.cloudId, input.pageId, candidate.id, input.token, fetcher);
+      stages.push({ stage: "attachment_metadata", status: metadata.status, hostCategory: "oauth_gateway" });
+      if (!metadata.ok && metadata.code === "ATTACHMENT_REAUTH_REQUIRED") {
+        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing" }); continue;
+      }
+      if (metadata.ok) candidate = { ...candidate, ...metadata.attachment };
     }
-    const urls: string[] = [];
-    if (candidate?.downloadLink) urls.push(gatewayDownloadUrl(input.cloudId, candidate.downloadLink));
-    if (candidate?.id) urls.push(
-      `https://api.atlassian.com/ex/confluence/${encodeURIComponent(input.cloudId)}/wiki/rest/api/content/${encodeURIComponent(input.pageId)}/child/attachment/${encodeURIComponent(candidate.id)}/download`,
-    );
-    if (reference.sourceUrl) {
-      const safeSource = validateConfluenceImageSource(reference.sourceUrl, input.cloudUrl, input.cloudId, input.pageId);
-      if (safeSource) urls.push(safeSource);
-      else if (!urls.length) { failures.push("source_untrusted"); continue; }
+    if (candidate && ((candidate.mediaType && !SAFE_IMAGE_MEDIA_TYPES.has(candidate.mediaType))
+      || (Number.isFinite(candidate.fileSize) && candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES))) {
+      const final = candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES ? "too_large" : "unsupported_mime";
+      failures.push(final); diagnostics.push({ image: index + 1, stages, final }); continue;
     }
-    if (!urls.length) { failures.push("fetch_failed"); continue; }
+
+    const attempts: Array<{ stage: string; url: string; attachmentId?: string }> = [];
+    if (candidate?.id) {
+      const id = encodeURIComponent(candidate.id);
+      const base = `https://api.atlassian.com/ex/confluence/${encodeURIComponent(input.cloudId)}`;
+      attempts.push({
+        stage: "v1_attachment_download",
+        url: `${base}/wiki/rest/api/content/${encodeURIComponent(input.pageId)}/child/attachment/${id}/download`,
+        attachmentId: candidate.id,
+      });
+      attempts.push({
+        stage: "v2_thumbnail_download",
+        url: `${base}/wiki/api/v2/attachments/${id}/thumbnail/download?width=1600`,
+        attachmentId: candidate.id,
+      });
+      if (candidate.downloadLink) {
+        const safe = metadataDownloadUrl(input.cloudId, input.pageId, candidate.downloadLink, input.cloudUrl);
+        if (safe) attempts.push({ stage: "metadata_download_link", url: safe, attachmentId: candidate.id });
+      }
+    }
+    for (const source of reference.sourceUrls) {
+      const safe = validateConfluenceImageSource(source, input.cloudUrl, input.cloudId, input.pageId);
+      if (safe) attempts.push({ stage: "verified_export_view", url: safe, attachmentId: candidate?.id });
+      else stages.push({ stage: "body_media_rejected", status: 0, hostCategory: atlassianHostCategory(source) });
+    }
 
     let binary: Awaited<ReturnType<typeof fetchAtlassianAttachmentBinary>> | null = null;
-    for (const url of [...new Set(urls)]) {
-      binary = await fetchAtlassianAttachmentBinary(url, input.token, candidate?.mediaType || "image/*", fetcher);
+    const attemptCodes: string[] = [];
+    for (const attempt of attempts.filter((item, itemIndex, values) => values.findIndex((other) => other.url === item.url) === itemIndex)) {
+      binary = await fetchAtlassianAttachmentBinary(
+        attempt.url,
+        input.token,
+        candidate?.mediaType || "image/*",
+        fetcher,
+        { cloudId: input.cloudId, pageId: input.pageId, attachmentId: attempt.attachmentId },
+      );
+      stages.push(...binary.trace.map((entry) => ({ stage: attempt.stage, ...entry })));
       if (binary.ok) break;
+      attemptCodes.push(binary.code);
     }
-    if (!binary?.ok) { failures.push(failureCode(binary?.code ?? "ATTACHMENT_DOWNLOAD_FAILED")); continue; }
+    if (!binary?.ok) {
+      const decisiveCode = attemptCodes.includes("ATTACHMENT_PERMISSION")
+        ? "ATTACHMENT_PERMISSION"
+        : attemptCodes.includes("ATTACHMENT_TOO_LARGE")
+          ? "ATTACHMENT_TOO_LARGE"
+          : attemptCodes.includes("ATTACHMENT_BINARY_UNSAFE")
+            ? "ATTACHMENT_BINARY_UNSAFE"
+            : binary?.code;
+      const final = attempts.length ? failureCode(decisiveCode ?? "ATTACHMENT_DOWNLOAD_FAILED") : "source_untrusted";
+      failures.push(final); diagnostics.push({ image: index + 1, stages, final }); continue;
+    }
     const filename = candidate?.title || reference.filename || "confluence-image";
     assets.push({
       assetKey: crypto.randomUUID().replaceAll("-", ""),
@@ -126,14 +216,15 @@ export async function fetchConfluenceImageSnapshots(input: {
       sha256: await sha256(binary.bytes),
       reference,
     });
+    diagnostics.push({ image: index + 1, stages, final: "saved" });
   }
-  return { references, assets, failures };
+  return { references, assets, failures, diagnostics };
 }
 
 export const SNAPSHOT_FAILURE_MESSAGES: Record<SnapshotFailureCode, string> = {
   scope_missing: "Atlassianの画像権限を再承認してください。",
-  source_untrusted: "安全性を確認できない画像参照がありました。",
-  fetch_failed: "Confluenceから画像を取得できませんでした。",
+  source_untrusted: "安全な取得経路を確認できない画像がありました。",
+  fetch_failed: "Confluence画像の取得処理に失敗しました。",
   too_large: "10MiBを超える画像は保存できません。",
   unsupported_mime: "対応していない画像形式がありました。",
 };

@@ -184,6 +184,8 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
       ],
     });
+    for (const diagnostic of snapshots.diagnostics)
+      console.info("CONFLUENCE_IMAGE_RESOLVER", diagnostic);
     if (snapshots.failures.length) {
       const counts = snapshots.failures.reduce<Record<string, number>>((result, code) => {
         result[code] = (result[code] ?? 0) + 1; return result;
@@ -192,7 +194,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       const scopeMissing = snapshots.failures.includes("scope_missing");
       return saveFailure(auth.membership.workspace_id, sceneId, {
         error: `画像を安全に内部保存できなかったため、前回の同期結果を保持しました。${messages.join(" ")}`,
-        nextAction: scopeMissing ? "「Atlassianに再接続」を押して画像権限を許可し、再同期してください。" : "対象画像を確認してから再同期してください。",
+        nextAction: scopeMissing ? "「Atlassianに再接続」を押して画像権限を許可し、再同期してください。" : "時間をおいてから、もう一度同期してください。",
         code: scopeMissing ? "ATTACHMENT_REAUTH_REQUIRED" : "IMAGE_SNAPSHOT_FAILED",
         status: scopeMissing ? 409 : 422,
       }, { assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });

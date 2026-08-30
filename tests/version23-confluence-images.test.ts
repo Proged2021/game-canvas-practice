@@ -115,7 +115,7 @@ test("proxy binaryはAtlassian redirect後も200 image/pngになりtokenを外�
     authorization.push(new Headers(init?.headers).get("authorization"));
     if (authorization.length === 1)
       return new Response(null, { status: 302, headers: { location: "https://api.media.atlassian.com/file/id/binary" } });
-    return new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { "content-type": "image/png" } });
+    return new Response(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), { status: 200, headers: { "content-type": "image/png" } });
   };
   const binary = await fetchAtlassianAttachmentBinary(
     "https://api.atlassian.com/ex/confluence/cloud/wiki/download/attachments/19791960/image.png",

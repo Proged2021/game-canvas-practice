@@ -36,7 +36,7 @@ test("storage形式ac:image/ri:attachmentの配置・alt・幅を保持する", 
 
 test("PNG添付は安全なredirect後に200用binaryとして取得しtokenを転送しない", async () => {
   const calls: Array<{ url: string; authorization?: string }> = [];
-  const png = new Uint8Array([137, 80, 78, 71]);
+  const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
   const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const headers = new Headers(init?.headers);
@@ -54,7 +54,7 @@ test("PNG添付は安全なredirect後に200用binaryとして取得しtokenを�
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.mediaType, "image/png");
-    assert.equal(result.bytes.byteLength, 4);
+    assert.equal(result.bytes.byteLength, 8);
   }
   assert.match(calls[0].authorization ?? "", /^Bearer /);
   assert.equal(calls[1].authorization, undefined);
@@ -67,7 +67,8 @@ test("安全でないredirect先・実行可能MIMEを拒否する", async () =>
     "image/png",
     (async () => new Response(null, { status: 302, headers: { location: "https://evil.example/a.png" } })) as typeof fetch,
   );
-  assert.deepEqual(redirect, { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502 });
+  assert.equal(redirect.ok, false);
+  if (!redirect.ok) assert.deepEqual({ code: redirect.code, status: redirect.status }, { code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502 });
 
   const mime = await fetchAtlassianAttachmentBinary(
     "https://api.atlassian.com/ex/confluence/cloud/wiki/download/attachments/1/a.png",
@@ -75,7 +76,8 @@ test("安全でないredirect先・実行可能MIMEを拒否する", async () =>
     "image/png",
     (async () => new Response("<svg/>", { status: 200, headers: { "content-type": "image/svg+xml" } })) as typeof fetch,
   );
-  assert.deepEqual(mime, { ok: false, code: "ATTACHMENT_BINARY_UNSAFE", status: 415 });
+  assert.equal(mime.ok, false);
+  if (!mime.ok) assert.deepEqual({ code: mime.code, status: mime.status }, { code: "ATTACHMENT_BINARY_UNSAFE", status: 415 });
 });
 
 test("場面別source migrationは同一workspace内の一致場面を優先する", async () => {

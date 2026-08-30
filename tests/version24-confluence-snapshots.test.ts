@@ -27,6 +27,13 @@ test("5 PNGをfilename検索して同期時にbinary snapshotへ変換する", a
         fileSize: 8, downloadLink: `/wiki/download/attachments/19791960/${filename}`,
       }] });
     }
+    if (/\/wiki\/api\/v2\/attachments\/att-\d+$/.test(new URL(url).pathname)) {
+      const id = new URL(url).pathname.split("/").at(-1)!;
+      const index = Number(id.split("-")[1]);
+      return Response.json({ id, title: names[index], pageId: "19791960", mediaType: "image/png", fileSize: 8 });
+    }
+    if (url.includes("/child/attachment/"))
+      return new Response(null, { status: 302, headers: { location: "https://api.media.atlassian.com/file/id/binary" } });
     return new Response(Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]), {
       headers: { "content-type": "image/png", "content-length": "8" },
     });
