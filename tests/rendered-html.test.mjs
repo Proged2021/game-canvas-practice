@@ -10,6 +10,7 @@ test("keeps the Japanese document metadata and authenticated dashboard", async (
 
   assert.match(layout, /title:\s*["']ゲーム企画書ワークスペース["']/);
   assert.match(layout, /<html lang=["']ja["']>/);
-  assert.match(page, /requireChatGPTUser\(["']\/["']\)/);
+  assert.match(page, /await getChatGPTUser\(\)/);
+  assert.match(page, /<LoginLanding/);
   assert.match(page, /dynamic\s*=\s*["']force-dynamic["']/);
 });
