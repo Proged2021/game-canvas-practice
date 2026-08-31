@@ -98,6 +98,10 @@ export function classifyBinaryFailure(
   const last = result.trace.at(-1);
   const category = last?.hostCategory ?? "oauth_gateway";
   const actualStatus = last?.status ?? result.status;
+  if (actualStatus === 401 && last?.sentAuthorization === false)
+    return makeDiagnostic("IMG-CDN-401", "image_cdn", actualStatus, category, "cdn_fetch_failed", logicalImageCount);
+  if (actualStatus === 403 && last?.sentAuthorization === false)
+    return makeDiagnostic("IMG-CDN-403", "image_cdn", actualStatus, category, "cdn_fetch_failed", logicalImageCount);
   const http = classifyAtlassianStatus(
     category === "oauth_gateway" ? requestStage : "image_cdn",
     actualStatus,
@@ -143,7 +147,7 @@ export function diagnosticNextAction(diagnostic: SafeImageDiagnostic) {
 
 export function aggregateResolverDiagnostics(
   diagnostics: Array<{
-    stages: Array<{ stage: string; status: number; hostCategory: string }>;
+    stages: Array<{ stage: string; status: number; hostCategory: string; sentAuthorization?: boolean; signedQuery?: boolean }>;
     final: string;
     finalCode?: string;
   }>,
@@ -165,11 +169,15 @@ export function aggregateResolverDiagnostics(
             ? "thumbnail_download"
             : "image_cdn";
     const status = failing?.status ?? 0;
+    if (status === 401 && failing?.sentAuthorization === false)
+      return makeDiagnostic("IMG-CDN-401", "image_cdn", status, failing.hostCategory, "cdn_fetch_failed", logicalImageCount);
+    if (status === 403 && failing?.sentAuthorization === false)
+      return makeDiagnostic("IMG-CDN-403", "image_cdn", status, failing.hostCategory, "cdn_fetch_failed", logicalImageCount);
     const byStatus = status ? classifyAtlassianStatus(requestStage, status, failing?.hostCategory ?? "unknown", logicalImageCount) : null;
     if (byStatus) return byStatus;
     if (item.finalCode === "DOWNLOAD_REDIRECT_MISSING")
       return makeDiagnostic("IMG-REDIRECT-EMPTY", requestStage, status || null, failing?.hostCategory ?? "unknown", "redirect_missing", logicalImageCount);
-    if (["DOWNLOAD_REDIRECT_UNSAFE", "DOWNLOAD_REDIRECT_LIMIT", "UNSAFE_DOWNLOAD_URL"].includes(item.finalCode ?? "") || item.final === "source_untrusted")
+    if (["DOWNLOAD_REDIRECT_UNSAFE", "DOWNLOAD_REDIRECT_LIMIT", "DOWNLOAD_REDIRECT_LOOP", "UNSAFE_DOWNLOAD_URL"].includes(item.finalCode ?? "") || item.final === "source_untrusted")
       return makeDiagnostic("IMG-REDIRECT-UNTRUSTED", requestStage, status || null, failing?.hostCategory ?? "unknown", "redirect_untrusted", logicalImageCount);
     if (item.finalCode === "ATTACHMENT_BINARY_UNSAFE" || item.final === "unsupported_mime")
       return makeDiagnostic("IMG-RESPONSE-INVALID", requestStage, status || null, failing?.hostCategory ?? "unknown", "invalid_image_response", logicalImageCount);

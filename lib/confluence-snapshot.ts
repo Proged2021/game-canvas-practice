@@ -17,7 +17,13 @@ import {
 } from "./confluence-safe.ts";
 
 export type SnapshotFailureCode = "scope_missing" | "source_untrusted" | "fetch_failed" | "too_large" | "unsupported_mime";
-export type ResolverStageTrace = { stage: string; status: number; hostCategory: string };
+export type ResolverStageTrace = {
+  stage: string;
+  status: number;
+  hostCategory: string;
+  sentAuthorization?: boolean;
+  signedQuery?: boolean;
+};
 export type LogicalConfluenceImage = ConfluenceImageReference & { sourceUrls: string[] };
 export type SnapshotImage = {
   assetKey: string;
@@ -92,7 +98,7 @@ function metadataDownloadUrl(cloudId: string, pageId: string, link: string, clou
 }
 
 function failureCode(code: string): SnapshotFailureCode {
-  if (code === "ATTACHMENT_PERMISSION") return "scope_missing";
+  if (code === "API_TOKEN_INVALID" || code === "API_PERMISSION") return "scope_missing";
   if (code === "ATTACHMENT_TOO_LARGE") return "too_large";
   if (code === "ATTACHMENT_BINARY_UNSAFE") return "unsupported_mime";
   if (code.includes("UNSAFE")) return "source_untrusted";

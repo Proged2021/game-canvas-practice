@@ -1,7 +1,12 @@
 import { MAX_CONFLUENCE_IMAGE_BYTES, SAFE_IMAGE_MEDIA_TYPES } from "./confluence-safe.ts";
 
 const MAX_REDIRECTS = 3;
-export type ResolverHttpTrace = { status: number; hostCategory: string };
+export type ResolverHttpTrace = {
+  status: number;
+  hostCategory: string;
+  sentAuthorization: boolean;
+  signedQuery: boolean;
+};
 
 function validHttpsUrl(value: string) {
   try {
@@ -18,7 +23,8 @@ export function atlassianHostCategory(value: string) {
   if (!url) return "invalid";
   const host = url.hostname.toLowerCase();
   if (host === "api.atlassian.com") return "oauth_gateway";
-  if (host === "api.media.atlassian.com" || host === "media.atlassian.com" || host.endsWith(".media.atlassian.com"))
+  if (host === "api.media.atlassian.com" || host === "media.atlassian.com" || host.endsWith(".media.atlassian.com")
+    || host === "media-cdn.atlassian.com" || host.endsWith(".media-cdn.atlassian.com"))
     return "atlassian_media";
   if (host.endsWith(".atl-paas.net")) return "atl_paas_media";
   return "untrusted";
@@ -30,6 +36,13 @@ export function isAllowedAtlassianDownloadUrl(value: string) {
 
 function gatewayPrefix(cloudId: string) {
   return `/ex/confluence/${encodeURIComponent(cloudId)}`;
+}
+
+function hasSignedDeliveryQuery(url: URL) {
+  if (!url.search) return false;
+  const keys = [...url.searchParams.keys()].map((key) => key.toLowerCase());
+  return keys.some((key) => /^(x-amz-|x-goog-|signature$|sig$|token$|jwt$|expires$|policy$|key-pair-id$)/.test(key))
+    || keys.some((key) => key.includes("signature") || key.includes("credential"));
 }
 
 export function validateConfluenceImageSource(value: string, cloudUrl: string, cloudId: string, pageId: string) {
@@ -88,31 +101,63 @@ export async function fetchAtlassianAttachmentBinary(
 ): Promise<AttachmentBinaryResult> {
   const trace: ResolverHttpTrace[] = [];
   let current = startUrl;
+  const visited = new Set<string>();
   if (!trustedGatewayStart(current, context))
     return { ok: false, code: "UNSAFE_DOWNLOAD_URL", status: 502, trace };
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    if (visited.has(current))
+      return { ok: false, code: "DOWNLOAD_REDIRECT_LOOP", status: 502, trace };
+    visited.add(current);
+    const parsed = validHttpsUrl(current);
+    if (!parsed)
+      return { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502, trace };
     const category = atlassianHostCategory(current);
-    if (hop === 0 ? category !== "oauth_gateway" : !["atlassian_media", "atl_paas_media"].includes(category))
+    const signedQuery = hasSignedDeliveryQuery(parsed);
+    const gatewayApi = category === "oauth_gateway" && trustedGatewayStart(current, context) && !signedQuery;
+    // A signed delivery URL is trusted only after it was obtained from a
+    // validated Atlassian API redirect. It may live on api.atlassian.com but
+    // outside the Confluence gateway path; it must still be fetched without
+    // Authorization or Cookie.
+    const anonymousDelivery = ["atlassian_media", "atl_paas_media"].includes(category)
+      || (hop > 0 && category === "oauth_gateway" && signedQuery);
+    if (hop === 0 ? !gatewayApi : !(gatewayApi || anonymousDelivery))
       return { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502, trace };
     const headers: Record<string, string> = { accept: "image/*,application/octet-stream;q=0.9" };
-    if (hop === 0) headers.authorization = `Bearer ${token}`;
-    const response = await fetcher(current, { method: "GET", redirect: "manual", headers });
-    trace.push({ status: response.status, hostCategory: category });
+    // Bearerは公式API呼び出しだけに付与する。署名付き配信URL/CDNにはCookieも含めて転送しない。
+    if (gatewayApi) headers.authorization = `Bearer ${token}`;
+    const response = await fetcher(current, {
+      method: "GET",
+      redirect: "manual",
+      credentials: "omit",
+      cache: "no-store",
+      headers,
+    });
+    trace.push({ status: response.status, hostCategory: category, sentAuthorization: gatewayApi, signedQuery });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       if (!location)
         return { ok: false, code: "DOWNLOAD_REDIRECT_MISSING", status: 502, trace };
       if (hop === MAX_REDIRECTS)
         return { ok: false, code: "DOWNLOAD_REDIRECT_LIMIT", status: 502, trace };
-      const next = new URL(location, current).toString();
-      if (!["atlassian_media", "atl_paas_media"].includes(atlassianHostCategory(next)))
+      let next: string;
+      try { next = new URL(location, current).toString(); }
+      catch { return { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502, trace }; }
+      const nextUrl = validHttpsUrl(next);
+      const nextCategory = atlassianHostCategory(next);
+      const nextGatewayApi = nextCategory === "oauth_gateway" && trustedGatewayStart(next, context);
+      const nextSignedDelivery = Boolean(nextUrl) && nextCategory === "oauth_gateway" && hasSignedDeliveryQuery(nextUrl);
+      if (!nextUrl || !(["atlassian_media", "atl_paas_media"].includes(nextCategory) || nextGatewayApi || nextSignedDelivery))
         return { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502, trace };
       current = next;
       continue;
     }
     if (!response.ok) return {
       ok: false,
-      code: response.status === 401 || response.status === 403 ? "ATTACHMENT_PERMISSION" : "ATTACHMENT_DOWNLOAD_FAILED",
+      code: response.status === 401
+        ? (gatewayApi ? "API_TOKEN_INVALID" : "CDN_UNAUTHORIZED")
+        : response.status === 403
+          ? (gatewayApi ? "API_PERMISSION" : "CDN_FORBIDDEN")
+          : "ATTACHMENT_DOWNLOAD_FAILED",
       status: response.status,
       trace,
     };
