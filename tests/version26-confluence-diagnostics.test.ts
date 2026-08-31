@@ -111,11 +111,12 @@ test("attachment list 200 foundからmetadataとdownload能力を検証する", 
   assert.equal(result.ok, true);
 });
 
-for (const [status, code] of [[403, "IMG-AUTH-403"], [404, "IMG-ID-404"]] as const) {
-  test(`attachment metadata ${status}を${code}へ分類する`, async () => {
+for (const status of [403, 404, 500] as const) {
+  test(`optional attachment metadata ${status}でもdownload fallbackを継続する`, async () => {
     const result = await runConfluenceCapabilityDiagnostic({ cloudId, cloudUrl, pageId, token: "token", fetcher: capabilityFetcher({ metadataStatus: status }) });
-    assert.equal(!result.ok && result.diagnostic.code, code);
-    assert.equal(!result.ok && result.diagnostic.requestStage, "attachment_metadata");
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.warnings[0]?.status, status);
+    assert.equal(result.ok && result.warnings[0]?.optional, true);
   });
 }
 

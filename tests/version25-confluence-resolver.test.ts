@@ -38,6 +38,17 @@ function successFetcher(observations: Array<{ url: string; auth: boolean }> = []
     const url = String(input);
     const headers = new Headers(init?.headers);
     observations.push({ url, auth: headers.has("authorization") });
+    if (url.includes("/pages/19791960/attachments?limit=100")) {
+      return Response.json({ results: Array.from({ length: 5 }, (_, index) => ({
+        id: `att-${index}`,
+        title: `image-${index}.png`,
+        pageId: "19791960",
+        mediaType: "image/png",
+        fileId: `media-${index}`,
+        fileSize: 8,
+        downloadLink: `/wiki/download/attachments/19791960/image-${index}.png`,
+      })) });
+    }
     if (url.includes("/attachments?filename=")) {
       const filename = new URL(url).searchParams.get("filename")!;
       const index = Number(filename.match(/(\d+)/)?.[1] ?? 0);

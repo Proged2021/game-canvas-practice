@@ -1,7 +1,7 @@
 import {
+  attachmentNeedsSupplement,
   fetchAllPageAttachments,
   fetchAttachmentMetadata,
-  searchPageAttachmentsByFilename,
 } from "./confluence-attachments.ts";
 import {
   atlassianHostCategory,
@@ -117,39 +117,53 @@ export async function fetchConfluenceImageSnapshots(input: {
   const assets: SnapshotImage[] = [];
   const failures: SnapshotFailureCode[] = [];
   const diagnostics: Array<{ image: number; stages: ResolverStageTrace[]; final: "saved" | SnapshotFailureCode; finalCode?: string }> = [];
-  let all: ConfluenceAttachmentDescriptor[] | null = null;
+  const warnings: Array<{
+    requestStage: "attachment_metadata";
+    status: number;
+    hostCategory: "oauth_gateway";
+    pathTemplate: "/wiki/api/v2/attachments/{attachment_id}";
+    queryNames: [];
+    idCategory: "attachment_id";
+    optional: true;
+  }> = [];
+
+  if (!references.length) return { references, assets, failures, diagnostics, warnings };
+
+  // 一覧は同期ごとに一度だけ取得し、この結果をcanonical metadataとして全画像で共有する。
+  const listed = await fetchAllPageAttachments(input.cloudId, input.pageId, input.token, fetcher);
+  const listStage: ResolverStageTrace = {
+    stage: "v2_attachment_list",
+    status: listed.status ?? (listed.ok ? 200 : 502),
+    hostCategory: "oauth_gateway",
+  };
+  if (!listed.ok) {
+    const final: SnapshotFailureCode = listed.code === "ATTACHMENT_REAUTH_REQUIRED" ? "scope_missing" : "fetch_failed";
+    for (const [index] of references.entries()) {
+      failures.push(final);
+      diagnostics.push({ image: index + 1, stages: [listStage], final, finalCode: listed.code });
+    }
+    return { references, assets, failures, diagnostics, warnings };
+  }
+  const all = listed.attachments;
 
   for (const [index, reference] of references.entries()) {
-    const stages: ResolverStageTrace[] = [];
-    let candidates: ConfluenceAttachmentDescriptor[] = [];
-    if (reference.filename) {
-      const direct = await searchPageAttachmentsByFilename(input.cloudId, input.pageId, reference.filename, input.token, fetcher);
-      stages.push({ stage: "v2_filename_lookup", status: direct.status, hostCategory: "oauth_gateway" });
-      if (!direct.ok && direct.code === "ATTACHMENT_REAUTH_REQUIRED") {
-        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing", finalCode: direct.code }); continue;
-      }
-      if (direct.ok) candidates = direct.attachments.filter((item) => matches(reference, item));
-    }
-    if (!candidates.length) {
-      if (!all) {
-        const listed = await fetchAllPageAttachments(input.cloudId, input.pageId, input.token, fetcher);
-        stages.push({ stage: "v2_attachment_list", status: listed.status ?? (listed.ok ? 200 : 502), hostCategory: "oauth_gateway" });
-        if (!listed.ok && listed.code === "ATTACHMENT_REAUTH_REQUIRED") {
-          failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing", finalCode: listed.code }); continue;
-        }
-        all = listed.ok ? listed.attachments : [];
-      }
-      candidates = all.filter((item) => matches(reference, item));
-    }
+    const stages: ResolverStageTrace[] = [listStage];
+    const candidates: ConfluenceAttachmentDescriptor[] = all.filter((item) => matches(reference, item));
 
     let candidate = candidates[0];
-    if (candidate?.id) {
+    if (candidate?.id && attachmentNeedsSupplement(candidate)) {
       const metadata = await fetchAttachmentMetadata(input.cloudId, input.pageId, candidate.id, input.token, fetcher);
       stages.push({ stage: "attachment_metadata", status: metadata.status, hostCategory: "oauth_gateway" });
-      if (!metadata.ok && metadata.code === "ATTACHMENT_REAUTH_REQUIRED") {
-        failures.push("scope_missing"); diagnostics.push({ image: index + 1, stages, final: "scope_missing", finalCode: metadata.code }); continue;
-      }
       if (metadata.ok) candidate = { ...candidate, ...metadata.attachment };
+      else warnings.push({
+        requestStage: "attachment_metadata",
+        status: metadata.status,
+        hostCategory: "oauth_gateway",
+        pathTemplate: "/wiki/api/v2/attachments/{attachment_id}",
+        queryNames: [],
+        idCategory: "attachment_id",
+        optional: true,
+      });
     }
     if (candidate && ((candidate.mediaType && !SAFE_IMAGE_MEDIA_TYPES.has(candidate.mediaType))
       || (Number.isFinite(candidate.fileSize) && candidate.fileSize > MAX_CONFLUENCE_IMAGE_BYTES))) {
@@ -183,7 +197,6 @@ export async function fetchConfluenceImageSnapshots(input: {
     }
 
     let binary: Awaited<ReturnType<typeof fetchAtlassianAttachmentBinary>> | null = null;
-    const attemptCodes: string[] = [];
     for (const attempt of attempts.filter((item, itemIndex, values) => values.findIndex((other) => other.url === item.url) === itemIndex)) {
       binary = await fetchAtlassianAttachmentBinary(
         attempt.url,
@@ -194,16 +207,10 @@ export async function fetchConfluenceImageSnapshots(input: {
       );
       stages.push(...binary.trace.map((entry) => ({ stage: attempt.stage, ...entry })));
       if (binary.ok) break;
-      attemptCodes.push(binary.code);
     }
     if (!binary?.ok) {
-      const decisiveCode = attemptCodes.includes("ATTACHMENT_PERMISSION")
-        ? "ATTACHMENT_PERMISSION"
-        : attemptCodes.includes("ATTACHMENT_TOO_LARGE")
-          ? "ATTACHMENT_TOO_LARGE"
-          : attemptCodes.includes("ATTACHMENT_BINARY_UNSAFE")
-            ? "ATTACHMENT_BINARY_UNSAFE"
-            : binary?.code;
+      // optional metadataを含む過去の失敗ではなく、最後まで試した取得経路を根本原因にする。
+      const decisiveCode = binary?.code;
       const final = attempts.length ? failureCode(decisiveCode ?? "ATTACHMENT_DOWNLOAD_FAILED") : "source_untrusted";
       failures.push(final); diagnostics.push({ image: index + 1, stages, final, finalCode: decisiveCode }); continue;
     }
@@ -218,7 +225,7 @@ export async function fetchConfluenceImageSnapshots(input: {
     });
     diagnostics.push({ image: index + 1, stages, final: "saved" });
   }
-  return { references, assets, failures, diagnostics };
+  return { references, assets, failures, diagnostics, warnings };
 }
 
 export const SNAPSHOT_FAILURE_MESSAGES: Record<SnapshotFailureCode, string> = {

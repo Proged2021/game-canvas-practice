@@ -3,7 +3,7 @@ import type { ConfluenceAttachmentDescriptor } from "./confluence-safe.ts";
 const MAX_ATTACHMENT_PAGES = 20;
 const PAGE_LIMIT = 100;
 
-type RawAttachment = {
+export type RawAttachment = {
   id?: string | number;
   title?: string;
   fileName?: string;
@@ -39,6 +39,13 @@ export function normalizeAttachment(item: RawAttachment, pageId: string) {
     fileSize: Number(item.fileSize),
     downloadLink,
   } satisfies ConfluenceAttachmentDescriptor;
+}
+
+export function attachmentNeedsSupplement(item: ConfluenceAttachmentDescriptor) {
+  return !item.title
+    || !item.mediaType
+    || !Number.isFinite(item.fileSize)
+    || !item.downloadLink;
 }
 
 export async function fetchAttachmentMetadata(

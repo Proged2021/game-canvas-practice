@@ -20,6 +20,7 @@ import {
   tokenDiagnostic,
   withLogicalImageCount,
   type SafeImageDiagnostic,
+  type SafeDiagnosticWarning,
 } from "@/lib/confluence-diagnostics";
 import { dedupeConfluenceImageReferences } from "@/lib/confluence-snapshot";
 import {
@@ -165,6 +166,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       _links?: { webui?: string };
     };
     let capabilityDiagnostic: SafeImageDiagnostic | null = null;
+    let capabilityWarnings: SafeDiagnosticWarning[] = [];
     if (checkOnly) {
       const pageResponse = await fetch(
         `https://api.atlassian.com/ex/confluence/${connection.cloud_id}/wiki/api/v2/pages/${pageId}?body-format=view`,
@@ -181,6 +183,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         token,
       });
       capabilityDiagnostic = capability.ok ? null : capability.diagnostic;
+      capabilityWarnings = "warnings" in capability ? capability.warnings : [];
       if (!("page" in capability) || !capability.page) {
         const diagnostic = withLogicalImageCount(capability.diagnostic, 0);
         console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);
@@ -219,13 +222,19 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
     ];
     const logicalImageCount = dedupeConfluenceImageReferences(pageId, representations).length;
-    if (capabilityDiagnostic && logicalImageCount > 0) {
+    const capabilityIsBlocking = capabilityDiagnostic
+      && ["token", "accessible_resources", "page", "attachment_list"].includes(capabilityDiagnostic.requestStage);
+    if (capabilityDiagnostic && logicalImageCount > 0 && capabilityIsBlocking) {
       const diagnostic = withLogicalImageCount(capabilityDiagnostic, logicalImageCount);
       console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);
       return saveFailure(auth.membership.workspace_id, sceneId, imageDiagnosticFailure(diagnostic), {
         diagnostic,
         assets: { saved: 0, failed: logicalImageCount, reasons: { [diagnostic.finalReason]: logicalImageCount } },
       });
+    }
+    if (capabilityDiagnostic && logicalImageCount > 0 && !capabilityIsBlocking) {
+      // v1/thumbnail probeの失敗だけでは止めず、一覧downloadLinkと本文由来の検証済み経路まで試す。
+      console.info("CONFLUENCE_IMAGE_CAPABILITY_NONBLOCKING", withLogicalImageCount(capabilityDiagnostic, logicalImageCount));
     }
     const snapshots = await fetchConfluenceImageSnapshots({
       cloudId: connection.cloud_id,
@@ -234,6 +243,16 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       token,
       representations,
     });
+    const diagnosticWarnings = [...capabilityWarnings, ...snapshots.warnings];
+    if (diagnosticWarnings.length) {
+      const grouped = diagnosticWarnings.reduce<Record<string, { warning: SafeDiagnosticWarning; count: number }>>((result, warning) => {
+        const key = `${warning.requestStage}:${warning.status}:${warning.idCategory}`;
+        result[key] = { warning, count: (result[key]?.count ?? 0) + 1 };
+        return result;
+      }, {});
+      for (const { warning, count } of Object.values(grouped))
+        console.info("CONFLUENCE_OPTIONAL_SUPPLEMENT_WARNING", { ...warning, count });
+    }
     for (const diagnostic of snapshots.diagnostics)
       console.info("CONFLUENCE_IMAGE_RESOLVER", diagnostic);
     if (snapshots.failures.length) {
@@ -249,7 +268,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         nextAction: scopeMissing ? "「Atlassianに再接続」を押して画像権限を許可し、再同期してください。" : "時間をおいてから、もう一度同期してください。",
         code: scopeMissing ? "ATTACHMENT_REAUTH_REQUIRED" : "IMAGE_SNAPSHOT_FAILED",
         status: scopeMissing ? 409 : 422,
-      }, { diagnostic, assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });
+      }, { diagnostic, diagnosticWarnings, assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });
     }
 
     const generation = crypto.randomUUID();
@@ -337,7 +356,16 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       last_checked_at: syncedAt,
       last_error: null,
     };
-    return Response.json({ message: "同期しました", warnings: [], assets: { saved: snapshots.assets.length, failed: 0 }, source: sceneSource });
+    const warnings = diagnosticWarnings.length
+      ? ["添付情報の補足取得に失敗しましたが、添付一覧から画像を取得しました。"]
+      : [];
+    return Response.json({
+      message: "同期しました",
+      warnings,
+      diagnosticWarnings,
+      assets: { saved: snapshots.assets.length, failed: 0 },
+      source: sceneSource,
+    });
   } catch (error) {
     const reauth = error instanceof Error && error.message === "Confluenceの再認証が必要です";
     const diagnostic = reauth ? tokenDiagnostic("decrypt_failed") : null;

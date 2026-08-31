@@ -1,4 +1,9 @@
-import { fetchAttachmentMetadata } from "./confluence-attachments.ts";
+import {
+  attachmentNeedsSupplement,
+  fetchAttachmentMetadata,
+  normalizeAttachment,
+  type RawAttachment,
+} from "./confluence-attachments.ts";
 import { fetchAtlassianAttachmentBinary, type AttachmentBinaryResult } from "./confluence-image.ts";
 
 export type DiagnosticStage =
@@ -35,6 +40,28 @@ export type SafeImageDiagnostic = {
   finalReason: DiagnosticReason;
   logicalImageCount: number;
 };
+
+export type SafeDiagnosticWarning = {
+  requestStage: "attachment_metadata";
+  status: number;
+  hostCategory: "oauth_gateway";
+  pathTemplate: "/wiki/api/v2/attachments/{attachment_id}";
+  queryNames: [];
+  idCategory: "attachment_id";
+  optional: true;
+};
+
+function metadataWarning(status: number): SafeDiagnosticWarning {
+  return {
+    requestStage: "attachment_metadata",
+    status,
+    hostCategory: "oauth_gateway",
+    pathTemplate: "/wiki/api/v2/attachments/{attachment_id}",
+    queryNames: [],
+    idCategory: "attachment_id",
+    optional: true,
+  };
+}
 
 export type CapabilityPage = {
   id: string;
@@ -209,28 +236,30 @@ export async function runConfluenceCapabilityDiagnostic(input: {
   const listResponse = await fetcher(`${base}/wiki/api/v2/pages/${encodeURIComponent(input.pageId)}/attachments?limit=1`, { headers });
   const listFailure = classifyAtlassianStatus("attachment_list", listResponse.status);
   if (listFailure) return { ok: false as const, page, diagnostic: listFailure };
-  const listBody = await listResponse.json().catch(() => ({})) as { results?: Array<{ id?: string | number; mediaType?: string }> };
-  const first = Array.isArray(listBody.results) ? listBody.results[0] : undefined;
-  if (first?.id == null)
+  const listBody = await listResponse.json().catch(() => ({})) as { results?: RawAttachment[] };
+  const firstRaw = Array.isArray(listBody.results) ? listBody.results[0] : undefined;
+  const first = firstRaw ? normalizeAttachment(firstRaw, input.pageId) : null;
+  if (!first)
     return { ok: false as const, page, diagnostic: makeDiagnostic("IMG-ATTACHMENT-NONE", "attachment_list", 200, "oauth_gateway", "attachment_not_found") };
-  const attachmentId = String(first.id);
-  const metadata = await fetchAttachmentMetadata(input.cloudId, input.pageId, attachmentId, input.token, fetcher);
-  if (!metadata.ok) {
-    const diagnostic = classifyAtlassianStatus("attachment_metadata", metadata.status)
-      ?? makeDiagnostic("IMG-RESPONSE-INVALID", "attachment_metadata", metadata.status, "oauth_gateway", "invalid_image_response");
-    return { ok: false as const, page, diagnostic };
+  const warnings: SafeDiagnosticWarning[] = [];
+  let canonical = first;
+  if (attachmentNeedsSupplement(first)) {
+    const metadata = await fetchAttachmentMetadata(input.cloudId, input.pageId, first.id, input.token, fetcher);
+    if (metadata.ok) canonical = { ...first, ...metadata.attachment };
+    else warnings.push(metadataWarning(metadata.status));
   }
+  const attachmentId = canonical.id;
   const context = { cloudId: input.cloudId, pageId: input.pageId, attachmentId };
-  const expectedMime = metadata.attachment.mediaType || first.mediaType || "image/*";
+  const expectedMime = canonical.mediaType || "image/*";
   const v1 = await fetchAtlassianAttachmentBinary(
     `${base}/wiki/rest/api/content/${encodeURIComponent(input.pageId)}/child/attachment/${encodeURIComponent(attachmentId)}/download`,
     input.token, expectedMime, fetcher, context,
   );
-  if (v1.ok) return { ok: true as const, page };
+  if (v1.ok) return { ok: true as const, page, warnings };
   const thumbnail = await fetchAtlassianAttachmentBinary(
     `${base}/wiki/api/v2/attachments/${encodeURIComponent(attachmentId)}/thumbnail/download?width=1600`,
     input.token, expectedMime, fetcher, context,
   );
-  if (thumbnail.ok) return { ok: true as const, page };
-  return { ok: false as const, page, diagnostic: classifyBinaryFailure("thumbnail_download", thumbnail) };
+  if (thumbnail.ok) return { ok: true as const, page, warnings };
+  return { ok: false as const, page, warnings, diagnostic: classifyBinaryFailure("thumbnail_download", thumbnail) };
 }

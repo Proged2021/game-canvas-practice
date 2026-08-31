@@ -13,19 +13,18 @@ import { MAX_CONFLUENCE_IMAGE_BYTES } from "../lib/confluence-safe.ts";
 const root = new URL("../", import.meta.url);
 const read = (path: string) => readFile(new URL(path, root), "utf8");
 
-test("5 PNGをfilename検索して同期時にbinary snapshotへ変換する", async () => {
+test("5 PNGを1回のcanonical attachment listからbinary snapshotへ変換する", async () => {
   const names = Array.from({ length: 5 }, (_, index) => `image-${index}.png`);
   const calls: string[] = [];
   const fetcher = async (input: string | URL | Request) => {
     const url = String(input);
     calls.push(url);
-    if (url.includes("/attachments?filename=")) {
-      const filename = new URL(url).searchParams.get("filename")!;
-      const index = names.indexOf(filename);
-      return Response.json({ results: [{
+    if (url.includes("/pages/19791960/attachments?limit=100")) {
+      return Response.json({ results: names.map((filename, index) => ({
         id: `att-${index}`, title: filename, pageId: "19791960", mediaType: "image/png",
-        fileSize: 8, downloadLink: `/wiki/download/attachments/19791960/${filename}`,
-      }] });
+        fileId: `file-${index}`, fileSize: 8,
+        downloadLink: `/wiki/download/attachments/19791960/${filename}`,
+      })) });
     }
     if (/\/wiki\/api\/v2\/attachments\/att-\d+$/.test(new URL(url).pathname)) {
       const id = new URL(url).pathname.split("/").at(-1)!;
@@ -45,7 +44,7 @@ test("5 PNGをfilename検索して同期時にbinary snapshotへ変換する", a
   });
   assert.equal(result.assets.length, 5);
   assert.deepEqual(result.failures, []);
-  assert.equal(calls.filter((url) => url.includes("?filename=")).length, 5);
+  assert.equal(calls.filter((url) => url.includes("/pages/19791960/attachments?limit=100")).length, 1);
   assert.ok(result.assets.every((asset) => asset.mime === "image/png" && asset.sha256.length === 64));
 });
 
