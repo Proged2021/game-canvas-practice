@@ -132,11 +132,11 @@ test("version30の手動画像・Confluence・undo/redo・招待機能を保持�
   assert.match(members, /secure_workspace_invites/);
 });
 
-test("runtimeVersion 32とno-store markerを公開しUIにも表示する", async () => {
+test("runtimeVersion 33とno-store markerを公開しUIにも表示する", async () => {
   const [version, runtime, client] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
-  assert.match(version, /"32"/);
+  assert.match(version, /"33"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:32/);
+  assert.match(client, /実行版:33/);
 });

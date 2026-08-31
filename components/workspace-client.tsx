@@ -72,6 +72,7 @@ import {
 } from "@/lib/scene-history";
 import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
 import { chooseSceneAfterDeletion, stableSceneOrder } from "@/lib/scene-order";
+import { copyTextWithFallback } from "@/lib/clipboard";
 
 type Scene = {
   id: string;
@@ -203,6 +204,7 @@ export function WorkspaceClient({
     [inviteSaving, setInviteSaving] = useState(false),
     [inviteError, setInviteError] = useState(""),
     [inviteUrl, setInviteUrl] = useState(""),
+    [inviteCopyState, setInviteCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle"),
     [pageInput, setPageInput] = useState(
       initialData.scenes.find((scene) => scene.id === initialSceneId)?.confluence_page_url ?? initialData.scenes[0]?.confluence_page_url ?? "",
     ),
@@ -237,6 +239,9 @@ export function WorkspaceClient({
   const [displayName, setDisplayName] = useState(initialData.currentUser.displayName ?? "");
   const [displayNameSaving, setDisplayNameSaving] = useState(false);
   const [displayNameError, setDisplayNameError] = useState("");
+  const inviteUrlInputRef = useRef<HTMLInputElement>(null);
+  const inviteCopyInFlight = useRef(false);
+  const inviteCopyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTimers = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
@@ -680,7 +685,34 @@ export function WorkspaceClient({
     if (!r.ok) return setInviteError(d.error ?? "招待を保存できませんでした");
     setData((p) => p ? { ...p, invitations: [d.invitation, ...p.invitations] } : p);
     setInviteUrl(d.inviteUrl ?? "");
+    setInviteCopyState("idle");
   }
+  async function copyInviteUrl() {
+    if (!inviteUrl || inviteCopyInFlight.current) return;
+    inviteCopyInFlight.current = true;
+    setInviteCopyState("copying");
+    if (inviteCopyResetTimer.current) clearTimeout(inviteCopyResetTimer.current);
+    try {
+      const method = await copyTextWithFallback(inviteUrl);
+      if (method === "failed") {
+        setInviteCopyState("failed");
+        inviteUrlInputRef.current?.focus();
+        inviteUrlInputRef.current?.select();
+        return;
+      }
+      setInviteCopyState("copied");
+      inviteCopyResetTimer.current = setTimeout(() => setInviteCopyState("idle"), 2_000);
+    } catch {
+      setInviteCopyState("failed");
+      inviteUrlInputRef.current?.focus();
+      inviteUrlInputRef.current?.select();
+    } finally {
+      inviteCopyInFlight.current = false;
+    }
+  }
+  useEffect(() => () => {
+    if (inviteCopyResetTimer.current) clearTimeout(inviteCopyResetTimer.current);
+  }, []);
   async function cancelInvitation(id: string) {
     const r = await fetch(`/api/workspaces/${slug}/members`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) });
     const d = await r.json() as { error?: string };
@@ -825,7 +857,7 @@ export function WorkspaceClient({
       if (result.source?.synced_html)
         setSceneSource((previous) => previous ? { ...previous, synced_html: result.source!.synced_html! } : previous);
       const saved = result.saved ?? total;
-      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "32"}`;
+      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "33"}`;
       setManualUpload({ active: false, completed: total, total, message });
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "画像を保存できませんでした。";
@@ -1075,7 +1107,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:32</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:33</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);
@@ -1139,7 +1171,7 @@ export function WorkspaceClient({
                 </Select>
                 {inviteError && <p className="form-error" role="alert"><AlertCircle size={16} />{inviteError}</p>}
                 <Button onClick={invite} disabled={inviteSaving}>{inviteSaving ? "発行中…" : "招待URLを発行"}</Button>
-                {inviteUrl && <div className="copy-fallback" role="status"><label htmlFor="generated-invite-url">今回発行した招待URL</label><Input id="generated-invite-url" readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} /><Button type="button" variant="outline" onClick={() => navigator.clipboard.writeText(inviteUrl)}><Copy size={14} />コピー</Button><p>安全のため、このURLは再表示できません。紛失時は取り消して再発行してください。</p></div>}
+                {inviteUrl && <div className="copy-fallback invite-url-copy"><label htmlFor="generated-invite-url">今回発行した招待URL</label><Input ref={inviteUrlInputRef} id="generated-invite-url" className="invite-url-field" readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} onClick={(event) => event.currentTarget.select()} aria-describedby="invite-copy-status" /><Button type="button" variant="outline" onClick={() => void copyInviteUrl()} disabled={inviteCopyState === "copying"} aria-label="今回発行した招待URLをコピー"><Copy size={14} />{inviteCopyState === "copying" ? "コピー中…" : inviteCopyState === "copied" ? "コピーしました" : "コピー"}</Button><p id="invite-copy-status" className={inviteCopyState === "failed" ? "copy-error" : inviteCopyState === "copied" ? "copy-success" : ""} aria-live="polite">{inviteCopyState === "failed" ? "コピーできませんでした。URLを選択したので Ctrl+C を押してください。" : inviteCopyState === "copied" ? "招待URLをコピーしました。" : "安全のため、このURLは再表示できません。紛失時は取り消して再発行してください。"}</p></div>}
                 <div className="member-list" aria-label="メンバー一覧">
                   <strong>メンバー</strong>
                   {data.members.map((member, index) => <div key={`${member.created_at}-${index}`}><span>{member.display_name ?? "メンバー"}{member.is_current ? "（自分）" : ""}</span><Badge variant="secondary">{member.role}</Badge></div>)}

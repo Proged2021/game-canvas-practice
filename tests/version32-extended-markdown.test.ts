@@ -130,11 +130,11 @@ test("version31の30日削除復元・表示名とUndo\/Redoを維持する", as
   assert.match(profile, /workspace_id=\?2 AND account_key=\?3/);
 });
 
-test("runtimeVersion 32・UI表示・no-store markerを公開する", async () => {
+test("runtimeVersion 33・UI表示・no-store markerを公開する", async () => {
   const [version, runtime, client] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
-  assert.match(version, /"32"/);
+  assert.match(version, /"33"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:32/);
+  assert.match(client, /実行版:33/);
 });
