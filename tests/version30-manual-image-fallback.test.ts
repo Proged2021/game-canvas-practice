@@ -136,14 +136,14 @@ test("CDN401は再接続不要で、本文同期はmanual fallback付き成功�
   assert.match(client, /ClipboardPaste|Ctrl\+V/);
 });
 
-test("runtimeVersion 30・UI表示・no-storeを維持する", async () => {
+test("runtimeVersion 31でもversion30画像機能とno-storeを維持する", async () => {
   const [version, runtime, client, upload, response] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/images/route.ts"), read("lib/confluence-asset-bytes.ts"),
   ]);
-  assert.match(version, /"30"/);
+  assert.match(version, /"31"/);
   assert.match(runtime, /cache-control.*no-store/s);
   assert.match(upload, /cache-control.*no-store/s);
   assert.match(response, /private, no-store/);
-  assert.match(client, /実行版:\$\{result\.runtimeVersion \?\? "30"\}/);
+  assert.match(client, /実行版:\$\{result\.runtimeVersion \?\? "31"\}/);
 });

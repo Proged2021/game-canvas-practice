@@ -5,7 +5,7 @@ import { loadManualSceneAssets } from "@/lib/confluence-assets";
 
 async function sceneInWorkspace(sceneId: string, workspaceId: string) {
   return db()
-    .prepare("SELECT id FROM scenes WHERE id=?1 AND workspace_id=?2")
+    .prepare("SELECT id FROM scenes WHERE id=?1 AND workspace_id=?2 AND deleted_at IS NULL")
     .bind(sceneId, workspaceId)
     .first<{ id: string }>();
 }

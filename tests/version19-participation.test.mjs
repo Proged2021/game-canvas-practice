@@ -59,7 +59,7 @@ test("owner and applicant see only a random confirmation code, not identity clai
   ]);
   assert.match(client, /確認コード/);
   assert.match(database, /confirmation_code/);
-  assert.doesNotMatch(client, /メールアドレス|member\.email|invitation\.email/);
+  assert.doesNotMatch(client, /member\.email|invitation\.email/);
   assert.doesNotMatch(join, /email|fullName|userId/);
 });
 

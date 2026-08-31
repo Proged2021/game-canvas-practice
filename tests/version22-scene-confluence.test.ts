@@ -91,11 +91,12 @@ test("場面別source migrationは同一workspace内の一致場面を優先す�
 });
 
 test("同期・取得・削除・画像proxyはworkspaceとsceneの組を強制する", async () => {
-  const [sync, source, proxy, scenes] = await Promise.all([
+  const [sync, source, proxy, scenes, cleanup] = await Promise.all([
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"),
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/route.ts"),
     read("app/api/workspaces/[slug]/scenes/[sceneId]/confluence/assets/[assetKey]/route.ts"),
     read("app/api/workspaces/[slug]/scenes/route.ts"),
+    read("lib/scene-deletion.ts"),
   ]);
   assert.match(sync, /body\.sceneId/);
   assert.match(sync, /INSERT INTO scene_confluence_sources/);
@@ -103,7 +104,8 @@ test("同期・取得・削除・画像proxyはworkspaceとsceneの組を強制�
   assert.match(source, /scene_id=\?1 AND workspace_id=\?2/);
   assert.match(proxy, /a\.asset_key=\?1 AND a\.workspace_id=\?2 AND a\.scene_id=\?3/);
   assert.match(proxy, /createStoredAssetResponse/);
-  assert.match(scenes, /DELETE FROM scene_confluence_sources WHERE scene_id=\?1 AND workspace_id=\?2/);
+  assert.match(scenes, /deleted_at=\?1,delete_expires_at=\?2/);
+  assert.match(cleanup, /DELETE FROM scene_confluence_sources WHERE workspace_id=\?1 AND scene_id=\?2/);
   assert.doesNotMatch(source, /DELETE FROM confluence_connections/);
 });
 

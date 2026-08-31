@@ -29,6 +29,7 @@ import {
   Undo2,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +41,16 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -60,6 +71,7 @@ import {
   undoSceneEdit,
 } from "@/lib/scene-history";
 import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
+import { chooseSceneAfterDeletion, stableSceneOrder } from "@/lib/scene-order";
 
 type Scene = {
   id: string;
@@ -93,6 +105,13 @@ type ManualImageSlot = {
   status: "saved" | "missing" | "error" | "uploading";
   src?: string | null;
   error?: string;
+};
+type DeletedScene = {
+  id: string;
+  title: string;
+  position: number;
+  deleted_at: string;
+  delete_expires_at: string;
 };
 type ConfluenceStatus = {
   state: "unconfigured" | "available" | "connected" | "reauth_required";
@@ -154,9 +173,10 @@ export type WorkspaceData = {
     slug: string;
     role: "owner" | "editor" | "viewer";
   };
-  currentUser: { label: string };
+  currentUser: { label: string; displayName: string | null };
   scenes: Scene[];
-  members: Array<{ role: string; created_at: string }>;
+  deletedScenes: DeletedScene[];
+  members: Array<{ role: string; display_name: string | null; is_current: number; created_at: string }>;
   invitations: Array<{ id: string; role: "editor" | "viewer"; status: string; expires_at: string; created_at: string }>;
   joinRequests: Array<{ id: string; confirmation_code: string; role: "editor" | "viewer"; status: string; created_at: string; expires_at: string }>;
   confluence: ConfluenceConnection;
@@ -209,6 +229,14 @@ export function WorkspaceClient({
     [sceneConfluenceUrl, setSceneConfluenceUrl] = useState(""),
     [sceneCreating, setSceneCreating] = useState(false),
     [sceneError, setSceneError] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Scene | null>(null);
+  const [deleteSaving, setDeleteSaving] = useState(false);
+  const deleteCancelRef = useRef<HTMLButtonElement>(null);
+  const [restoreSavingId, setRestoreSavingId] = useState("");
+  const [displayNameOpen, setDisplayNameOpen] = useState(false);
+  const [displayName, setDisplayName] = useState(initialData.currentUser.displayName ?? "");
+  const [displayNameSaving, setDisplayNameSaving] = useState(false);
+  const [displayNameError, setDisplayNameError] = useState("");
   const saveTimers = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
@@ -536,6 +564,104 @@ export function WorkspaceClient({
       setSceneCreating(false);
     }
   }
+  async function deleteScene() {
+    if (!deleteTarget || deleteSaving || !editMode || !editable || !data) return;
+    setDeleteSaving(true);
+    try {
+      const response = await fetch(`/api/workspaces/${slug}/scenes`, {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+          "x-plotline-csrf": "delete-scene",
+          "x-plotline-edit-mode": "true",
+        },
+        body: JSON.stringify({ id: deleteTarget.id }),
+      });
+      const result = await response.json() as { error?: string; deletedScene?: DeletedScene };
+      if (!response.ok || !result.deletedScene) throw new Error(result.error ?? "場面を削除できませんでした");
+      const nextSelection = chooseSceneAfterDeletion(data.scenes, deleteTarget.id);
+      const timer = saveTimers.current.get(deleteTarget.id);
+      if (timer) clearTimeout(timer);
+      saveTimers.current.delete(deleteTarget.id);
+      latestScenes.current.delete(deleteTarget.id);
+      setData((previous) => previous ? {
+        ...previous,
+        scenes: previous.scenes.filter((scene) => scene.id !== deleteTarget.id),
+        deletedScenes: [result.deletedScene!, ...(previous.deletedScenes ?? []).filter((scene) => scene.id !== deleteTarget.id)],
+      } : previous);
+      if (selectedId === deleteTarget.id) setSelectedId(nextSelection?.id ?? "");
+      setDeleteTarget(null);
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "場面を削除できませんでした");
+    } finally {
+      setDeleteSaving(false);
+    }
+  }
+  async function restoreScene(sceneId: string) {
+    if (restoreSavingId || !editMode || !editable) return;
+    setRestoreSavingId(sceneId);
+    try {
+      const response = await fetch(`/api/workspaces/${slug}/scenes/${encodeURIComponent(sceneId)}/restore`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-plotline-csrf": "restore-scene",
+          "x-plotline-edit-mode": "true",
+        },
+        body: "{}",
+      });
+      const result = await response.json() as { error?: string; scene?: Scene; alreadyRestored?: boolean };
+      if (!response.ok) throw new Error(result.error ?? "場面を復元できませんでした");
+      if (!result.scene) {
+        await load();
+        return;
+      }
+      latestScenes.current.set(result.scene.id, result.scene);
+      setSceneHistories((previous) => new Map(previous).set(result.scene!.id,
+        createSceneHistory({ title: result.scene!.title, markdown: result.scene!.markdown })));
+      setData((previous) => previous ? {
+        ...previous,
+        scenes: stableSceneOrder([...previous.scenes.filter((scene) => scene.id !== result.scene!.id), result.scene!]),
+        deletedScenes: (previous.deletedScenes ?? []).filter((scene) => scene.id !== sceneId),
+      } : previous);
+      setSelectedId(result.scene.id);
+      setPageInput(result.scene.confluence_page_url ?? "");
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "場面を復元できませんでした");
+    } finally {
+      setRestoreSavingId("");
+    }
+  }
+  async function saveDisplayName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (displayNameSaving) return;
+    setDisplayNameSaving(true);
+    setDisplayNameError("");
+    try {
+      const response = await fetch(`/api/workspaces/${slug}/profile`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-plotline-csrf": "workspace-display-name" },
+        body: JSON.stringify({ displayName }),
+      });
+      const result = await response.json() as { error?: string; displayName?: string; updatedSceneIds?: string[] };
+      if (!response.ok || !result.displayName) throw new Error(result.error ?? "表示名を保存できませんでした");
+      const changed = new Set(result.updatedSceneIds ?? []);
+      setDisplayName(result.displayName);
+      setData((previous) => previous ? {
+        ...previous,
+        currentUser: { label: result.displayName!, displayName: result.displayName! },
+        members: previous.members.map((member) => member.is_current ? { ...member, display_name: result.displayName! } : member),
+        scenes: previous.scenes.map((scene) => changed.has(scene.id) ? { ...scene, updated_by: result.displayName! } : scene),
+      } : previous);
+      setDisplayNameOpen(false);
+    } catch (caught) {
+      setDisplayNameError(caught instanceof Error ? caught.message : "表示名を保存できませんでした");
+    } finally {
+      setDisplayNameSaving(false);
+    }
+  }
   async function invite() {
     if (inviteSaving) return;
     setInviteError("");
@@ -699,7 +825,7 @@ export function WorkspaceClient({
       if (result.source?.synced_html)
         setSceneSource((previous) => previous ? { ...previous, synced_html: result.source!.synced_html! } : previous);
       const saved = result.saved ?? total;
-      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "30"}`;
+      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "31"}`;
       setManualUpload({ active: false, completed: total, total, message });
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "画像を保存できませんでした。";
@@ -949,6 +1075,40 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
+          <Badge variant="outline" className="runtime-badge">実行版:31</Badge>
+          <Dialog open={displayNameOpen} onOpenChange={(open) => {
+            if (displayNameSaving) return;
+            setDisplayNameOpen(open);
+            if (open) {
+              setDisplayName(data.currentUser.displayName ?? "");
+              setDisplayNameError("");
+            }
+          }}>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm" aria-label="自分の表示名を設定または変更">
+                <Users size={15} />
+                {data.currentUser.displayName ?? "名前を設定"}
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>自分の表示名</DialogTitle>
+                <DialogDescription>
+                  この名前はこのワークスペースの参加者に表示されます。メールアドレスやChatGPTの名前は表示されません。
+                </DialogDescription>
+              </DialogHeader>
+              <form className="display-name-form" onSubmit={saveDisplayName}>
+                <label htmlFor="workspace-display-name">このワークスペースで使う名前</label>
+                <Input id="workspace-display-name" value={displayName} maxLength={60}
+                  onChange={(event) => setDisplayName(event.target.value)} autoComplete="off" autoFocus />
+                {displayNameError && <p className="form-error" role="alert"><AlertCircle size={16} />{displayNameError}</p>}
+                <div className="dialog-actions">
+                  <Button type="button" variant="outline" onClick={() => setDisplayNameOpen(false)} disabled={displayNameSaving}>キャンセル</Button>
+                  <Button type="submit" disabled={displayNameSaving}>{displayNameSaving ? "保存中…" : "保存"}</Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
           {data.workspace.role === "owner" && (
             <Dialog>
               <DialogTrigger asChild>
@@ -982,7 +1142,7 @@ export function WorkspaceClient({
                 {inviteUrl && <div className="copy-fallback" role="status"><label htmlFor="generated-invite-url">今回発行した招待URL</label><Input id="generated-invite-url" readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} /><Button type="button" variant="outline" onClick={() => navigator.clipboard.writeText(inviteUrl)}><Copy size={14} />コピー</Button><p>安全のため、このURLは再表示できません。紛失時は取り消して再発行してください。</p></div>}
                 <div className="member-list" aria-label="メンバー一覧">
                   <strong>メンバー</strong>
-                  {data.members.map((member, index) => <div key={`${member.created_at}-${index}`}><span>匿名メンバー {index + 1}</span><Badge variant="secondary">{member.role}</Badge></div>)}
+                  {data.members.map((member, index) => <div key={`${member.created_at}-${index}`}><span>{member.display_name ?? "メンバー"}{member.is_current ? "（自分）" : ""}</span><Badge variant="secondary">{member.role}</Badge></div>)}
                 </div>
                 <div className="member-list" aria-label="招待中一覧">
                   <strong>有効な招待URL</strong>
@@ -1079,20 +1239,66 @@ export function WorkspaceClient({
               )}
             </div>
             {data.scenes.map((s, i) => (
-              <button
-                key={s.id}
-                onClick={() => {
-                  setSelectedId(s.id);
-                  setPageInput(s.confluence_page_url ?? "");
-                }}
-                className={s.id === active?.id ? "active" : ""}
-                aria-current={s.id === active?.id ? "true" : undefined}
-              >
-                <span>{String(i + 1).padStart(2, "0")}</span>
-                <strong>{s.title}</strong>
-              </button>
+              <div className={`scene-list-item ${s.id === active?.id ? "active" : ""}`} key={s.id}>
+                <button
+                  type="button"
+                  className="scene-select-button"
+                  onClick={() => {
+                    setSelectedId(s.id);
+                    setPageInput(s.confluence_page_url ?? "");
+                  }}
+                  aria-current={s.id === active?.id ? "true" : undefined}
+                >
+                  <span>{String(i + 1).padStart(2, "0")}</span>
+                  <strong>{s.title}</strong>
+                </button>
+                {editMode && editable && (
+                  <button type="button" className="scene-delete-button"
+                    onClick={(event) => { event.stopPropagation(); setDeleteTarget(s); }}
+                    disabled={deleteSaving} aria-label={`「${s.title}」を削除`} title="場面を削除">
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
             ))}
+            {editMode && editable && (data.deletedScenes ?? []).length > 0 && (
+              <div className="deleted-scenes" aria-label="最近削除した場面" aria-live="polite">
+                <strong>最近削除した場面</strong>
+                {(data.deletedScenes ?? []).map((scene) => (
+                  <div key={scene.id} className="deleted-scene-notice">
+                    <span>「{scene.title}」を削除しました</span>
+                    <Button type="button" size="sm" variant="outline" onClick={() => restoreScene(scene.id)}
+                      disabled={Boolean(restoreSavingId)}>
+                      {restoreSavingId === scene.id ? "復元中…" : "元に戻す"}
+                    </Button>
+                  </div>
+                ))}
+                <small>削除後30日間は、再読み込み後も復元できます。</small>
+              </div>
+            )}
           </aside>
+          <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => {
+            if (!open && !deleteSaving) setDeleteTarget(null);
+          }}>
+            <AlertDialogContent onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              requestAnimationFrame(() => deleteCancelRef.current?.focus());
+            }}>
+              <AlertDialogHeader>
+                <AlertDialogTitle>場面を削除しますか？</AlertDialogTitle>
+                <AlertDialogDescription>
+                  「{deleteTarget?.title}」を削除しますか？ この操作は編集モード中に元に戻せます。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel ref={deleteCancelRef} disabled={deleteSaving}>キャンセル</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={(event) => {
+                  event.preventDefault();
+                  void deleteScene();
+                }} disabled={deleteSaving}>{deleteSaving ? "削除中…" : "削除する"}</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           <div className="editor-area">
             {active ? (
               <>

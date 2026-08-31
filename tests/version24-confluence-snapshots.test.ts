@@ -101,10 +101,11 @@ test("新世代は全画像成功後だけ切替え、失敗時は旧画像を�
 });
 
 test("asset routeはmembership・scene/page/generation関連を検証し削除時cleanupする", async () => {
-  const [route, scenes, unlink] = await Promise.all([
+  const [route, scenes, unlink, cleanup] = await Promise.all([
     read("app/api/workspaces/[slug]/scenes/[sceneId]/confluence/assets/[assetKey]/route.ts"),
     read("app/api/workspaces/[slug]/scenes/route.ts"),
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/route.ts"),
+    read("lib/scene-deletion.ts"),
   ]);
   assert.match(route, /authorizeWorkspace/);
   assert.match(route, /auth\.membership\.workspace_id !== workspaceId/);
@@ -112,6 +113,7 @@ test("asset routeはmembership・scene/page/generation関連を検証し削除�
   assert.match(route, /src\.asset_generation=a\.generation OR EXISTS/);
   assert.match(route, /m\.generation=src\.manual_generation/);
   assert.match(route, /ORDER BY chunk_index/);
-  assert.match(scenes, /DELETE FROM scene_confluence_assets/);
+  assert.match(scenes, /deleted_at=\?1,delete_expires_at=\?2/);
+  assert.match(cleanup, /DELETE FROM scene_confluence_assets/);
   assert.match(unlink, /DELETE FROM scene_confluence_assets/);
 });

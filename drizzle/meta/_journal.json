@@ -71,6 +71,13 @@
       "when": 1788170544832,
       "tag": "0009_blushing_sunfire",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788181238106,
+      "tag": "0010_motionless_vulture",
+      "breakpoints": true
     }
   ]
 }

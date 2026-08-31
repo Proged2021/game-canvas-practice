@@ -20,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
     const state = secureState();
     const requestedSceneId = new URL(request.url).searchParams.get("sceneId") ?? "";
     const scene = /^[A-Za-z0-9_-]{1,128}$/.test(requestedSceneId)
-      ? await db().prepare("SELECT id FROM scenes WHERE id=?1 AND workspace_id=?2")
+      ? await db().prepare("SELECT id FROM scenes WHERE id=?1 AND workspace_id=?2 AND deleted_at IS NULL")
           .bind(requestedSceneId, auth.membership.workspace_id).first<{ id: string }>()
       : null;
     const expires = new Date(Date.now() + 10 * 60_000).toISOString();

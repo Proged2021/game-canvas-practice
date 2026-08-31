@@ -1,6 +1,8 @@
 import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { validateSceneCreation } from "@/lib/creation-validation";
+import { validateSameOriginJson } from "@/lib/request-security";
+import { sceneRecoveryExpiry } from "@/lib/scene-recovery-policy";
 
 export async function POST(
   request: Request,
@@ -26,7 +28,7 @@ export async function POST(
   try {
     const position = await db()
       .prepare(
-        "SELECT COALESCE(MAX(position), -1) + 1 AS value FROM scenes WHERE workspace_id = ?1",
+        "SELECT COALESCE(MAX(position), -1) + 1 AS value FROM scenes WHERE workspace_id = ?1 AND deleted_at IS NULL",
       )
       .bind(auth.membership.workspace_id)
       .first<{ value: number }>();
@@ -98,7 +100,7 @@ export async function PATCH(
       .prepare(
         `UPDATE scenes SET title = ?1, markdown = ?2, revision = revision + 1,
       updated_by = ?3, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?4 AND workspace_id = ?5 AND revision = ?6`,
+      WHERE id = ?4 AND workspace_id = ?5 AND revision = ?6 AND deleted_at IS NULL`,
       )
       .bind(
         (body.title ?? "無題").slice(0, 120),
@@ -112,7 +114,9 @@ export async function PATCH(
     if (!result.meta.changes) {
       const current = await db()
         .prepare(
-          "SELECT id, title, markdown, revision, 'メンバー' AS updated_by, updated_at FROM scenes WHERE id = ?1 AND workspace_id = ?2",
+          `SELECT s.id,s.title,s.markdown,s.revision,COALESCE(m.display_name,'メンバー') AS updated_by,s.updated_at
+           FROM scenes s LEFT JOIN account_memberships m ON m.workspace_id=s.workspace_id AND ('account:' || m.account_key)=s.updated_by
+           WHERE s.id=?1 AND s.workspace_id=?2 AND s.deleted_at IS NULL`,
         )
         .bind(body.id, auth.membership.workspace_id)
         .first();
@@ -123,9 +127,11 @@ export async function PATCH(
     }
     const scene = await db()
       .prepare(
-        "SELECT id, title, markdown, position, revision, 'メンバー' AS updated_by, updated_at FROM scenes WHERE id = ?1",
+        `SELECT s.id,s.title,s.markdown,s.position,s.revision,COALESCE(m.display_name,'メンバー') AS updated_by,s.updated_at
+         FROM scenes s LEFT JOIN account_memberships m ON m.workspace_id=s.workspace_id AND ('account:' || m.account_key)=s.updated_by
+         WHERE s.id=?1 AND s.workspace_id=?2 AND s.deleted_at IS NULL`,
       )
-      .bind(body.id)
+      .bind(body.id, auth.membership.workspace_id)
       .first();
     return Response.json({ scene });
   } catch {
@@ -143,31 +149,27 @@ export async function DELETE(
   const { slug } = await params;
   const auth = await authorizeWorkspace(slug, ["owner", "editor"]);
   if (!auth.ok) return auth.response;
+  if (!validateSameOriginJson(request, "delete-scene") || request.headers.get("x-plotline-edit-mode") !== "true")
+    return Response.json({ error: "編集モードでのみ場面を削除できます" }, { status: 403 });
   const body = (await request.json().catch(() => ({}))) as { id?: string };
   if (!body.id)
     return Response.json({ error: "削除する場面が指定されていません" }, { status: 400 });
   const database = db();
   const scene = await database
-    .prepare("SELECT id FROM scenes WHERE id=?1 AND workspace_id=?2")
+    .prepare("SELECT id,title,position,deleted_at,delete_expires_at FROM scenes WHERE id=?1 AND workspace_id=?2")
     .bind(body.id, auth.membership.workspace_id)
-    .first();
+    .first<{ id: string; title: string; position: number; deleted_at: string | null; delete_expires_at: string | null }>();
   if (!scene) return Response.json({ error: "場面が見つかりません" }, { status: 404 });
-  await database.batch([
-    database
-      .prepare("DELETE FROM scene_confluence_manual_assets WHERE scene_id=?1 AND workspace_id=?2")
-      .bind(body.id, auth.membership.workspace_id),
-    database
-      .prepare("DELETE FROM scene_confluence_assets WHERE scene_id=?1 AND workspace_id=?2")
-      .bind(body.id, auth.membership.workspace_id),
-    database
-      .prepare("DELETE FROM scene_confluence_attachments WHERE scene_id=?1 AND workspace_id=?2")
-      .bind(body.id, auth.membership.workspace_id),
-    database
-      .prepare("DELETE FROM scene_confluence_sources WHERE scene_id=?1 AND workspace_id=?2")
-      .bind(body.id, auth.membership.workspace_id),
-    database
-      .prepare("DELETE FROM scenes WHERE id=?1 AND workspace_id=?2")
-      .bind(body.id, auth.membership.workspace_id),
-  ]);
-  return Response.json({ ok: true });
+  if (scene.deleted_at)
+    return Response.json({ ok: true, alreadyDeleted: true, deletedScene: scene }, { headers: { "cache-control": "no-store" } });
+  const deletedAt = new Date().toISOString();
+  const deleteExpiresAt = sceneRecoveryExpiry(new Date(deletedAt));
+  const result = await database.prepare(`UPDATE scenes SET deleted_at=?1,delete_expires_at=?2,deleted_by_account_key=?3
+    WHERE id=?4 AND workspace_id=?5 AND deleted_at IS NULL`)
+    .bind(deletedAt, deleteExpiresAt, auth.user.accountKey, body.id, auth.membership.workspace_id).run();
+  if (!result.meta.changes) return Response.json({ error: "場面を削除できませんでした" }, { status: 409 });
+  return Response.json({ ok: true, deletedScene: {
+    id: scene.id, title: scene.title, position: scene.position,
+    deleted_at: deletedAt, delete_expires_at: deleteExpiresAt,
+  } }, { headers: { "cache-control": "no-store" } });
 }

@@ -54,6 +54,9 @@ export const scenes = sqliteTable(
     position: integer("position").notNull().default(0),
     revision: integer("revision").notNull().default(1),
     updatedBy: text("updated_by").notNull(),
+    deletedAt: text("deleted_at"),
+    deleteExpiresAt: text("delete_expires_at"),
+    deletedByAccountKey: text("deleted_by_account_key"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -265,6 +268,8 @@ export const accountMemberships = sqliteTable(
     accountKey: text("account_key").notNull(),
     role: text("role", { enum: ["owner", "editor", "viewer"] }).notNull(),
     invitedByAccountKey: text("invited_by_account_key"),
+    displayName: text("display_name"),
+    displayNameUpdatedAt: text("display_name_updated_at"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [

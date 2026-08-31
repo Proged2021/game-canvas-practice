@@ -50,7 +50,7 @@ export async function GET(
       FROM scene_confluence_attachments a
       JOIN scene_confluence_sources s
         ON s.scene_id=a.scene_id AND s.workspace_id=a.workspace_id AND s.page_id=a.page_id
-      JOIN scenes scene ON scene.id=a.scene_id AND scene.workspace_id=a.workspace_id
+      JOIN scenes scene ON scene.id=a.scene_id AND scene.workspace_id=a.workspace_id AND scene.deleted_at IS NULL
       WHERE a.workspace_id=?1 AND a.scene_id=?2 AND a.page_id=?3 AND a.attachment_id=?4`)
     .bind(auth.membership.workspace_id, sceneId, pageId, attachmentId)
     .first<{ media_type: string; file_size: number; download_path: string }>();

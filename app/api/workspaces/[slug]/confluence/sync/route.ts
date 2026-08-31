@@ -114,7 +114,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sceneId))
     return noStoreJson({ error: "対象場面が指定されていません。", code: "SCENE_REQUIRED", runtimeVersion: PLOTLINE_RUNTIME_VERSION }, { status: 400 });
   const scene = await db()
-    .prepare("SELECT id,confluence_page_url FROM scenes WHERE id=?1 AND workspace_id=?2")
+    .prepare("SELECT id,confluence_page_url FROM scenes WHERE id=?1 AND workspace_id=?2 AND deleted_at IS NULL")
     .bind(sceneId, auth.membership.workspace_id)
     .first<{ id: string; confluence_page_url: string | null }>();
   if (!scene) return noStoreJson({ error: "場面が見つかりません。", runtimeVersion: PLOTLINE_RUNTIME_VERSION }, { status: 404 });

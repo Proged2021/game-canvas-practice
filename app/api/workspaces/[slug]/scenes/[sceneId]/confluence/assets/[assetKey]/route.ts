@@ -21,7 +21,7 @@ export async function GET(
     return Response.json({ error: "この画像を表示する権限がありません" }, { status: 403 });
   const asset = await db().prepare(`SELECT a.mime,a.byte_size
     FROM scene_confluence_assets a
-    JOIN scenes sc ON sc.id=a.scene_id AND sc.workspace_id=a.workspace_id
+    JOIN scenes sc ON sc.id=a.scene_id AND sc.workspace_id=a.workspace_id AND sc.deleted_at IS NULL
     JOIN scene_confluence_sources src ON src.scene_id=a.scene_id AND src.workspace_id=a.workspace_id
       AND src.page_id=a.page_id
     WHERE a.asset_key=?1 AND a.workspace_id=?2 AND a.scene_id=?3

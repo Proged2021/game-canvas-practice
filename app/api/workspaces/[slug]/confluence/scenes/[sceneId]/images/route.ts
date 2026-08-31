@@ -36,8 +36,9 @@ export async function POST(
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sceneId))
     return json({ error: "場面が見つかりません。" }, { status: 404 });
 
-  const source = await db().prepare(`SELECT page_id,synced_html FROM scene_confluence_sources
-    WHERE workspace_id=?1 AND scene_id=?2`)
+  const source = await db().prepare(`SELECT src.page_id,src.synced_html FROM scene_confluence_sources src
+    JOIN scenes scene ON scene.id=src.scene_id AND scene.workspace_id=src.workspace_id AND scene.deleted_at IS NULL
+    WHERE src.workspace_id=?1 AND src.scene_id=?2`)
     .bind(auth.membership.workspace_id, sceneId)
     .first<{ page_id: string; synced_html: string }>();
   if (!source) return json({ error: "先にConfluence本文を同期してください。" }, { status: 409 });
