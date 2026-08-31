@@ -857,7 +857,7 @@ export function WorkspaceClient({
       if (result.source?.synced_html)
         setSceneSource((previous) => previous ? { ...previous, synced_html: result.source!.synced_html! } : previous);
       const saved = result.saved ?? total;
-      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "33"}`;
+      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "34"}`;
       setManualUpload({ active: false, completed: total, total, message });
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "画像を保存できませんでした。";
@@ -1107,7 +1107,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:33</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:34</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);

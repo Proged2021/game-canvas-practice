@@ -24,8 +24,8 @@ export async function authorizeWorkspace(slug: string, allowed?: Role[]) {
     return {
       ok: false,
       response: Response.json(
-        { error: "このワークスペースへの招待がありません" },
-        { status: 403 },
+        { error: "ワークスペースが見つかりません" },
+        { status: 404, headers: { "cache-control": "no-store" } },
       ),
     } as const;
   if (allowed && !allowed.includes(membership.role)) {

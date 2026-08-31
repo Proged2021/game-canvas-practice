@@ -106,8 +106,27 @@ test("server-renders each saved workspace as a native accessible link", async ()
   assert.match(html, /<a[^>]*class="workspace-card"/);
   assert.match(html, /href="\/w\/workspace-06908b60-3df"/);
   assert.match(html, /aria-label="テスト1を開く"/);
+  assert.match(html, /aria-label="ワークスペース「テスト1」を削除"/);
   assert.match(html, />テスト1</);
   assert.match(html, />1 場面</);
+});
+
+test("does not render workspace deletion for editor or viewer cards", async () => {
+  const { DashboardClient } = await vite.ssrLoadModule(
+    "/components/dashboard-client.tsx",
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(DashboardClient, {
+      signOutPath: "/signout-with-chatgpt?return_to=%2F",
+      initialWorkspaces: [
+        { slug: "editor-space", name: "編集用", role: "editor", scene_count: 2 },
+        { slug: "viewer-space", name: "閲覧用", role: "viewer", scene_count: 3 },
+      ],
+    }),
+  );
+  assert.match(html, /href="\/w\/editor-space"/);
+  assert.match(html, /href="\/w\/viewer-space"/);
+  assert.doesNotMatch(html, /workspace-delete-button/);
 });
 
 test("server-renders direct workspace links with saved scene content", async () => {

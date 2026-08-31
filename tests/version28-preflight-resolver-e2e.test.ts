@@ -107,12 +107,12 @@ test("optional metadata 500・v1 401でもthumbnail 302/PNGで成功する", asy
   assert.equal(snapshots.warnings.length, 5);
 });
 
-test("公開runtime markerは33だけをno-storeで返す", async () => {
+test("公開runtime markerは34だけをno-storeで返す", async () => {
   const [route, version] = await Promise.all([
     read("app/api/runtime/route.ts"),
     read("lib/runtime-version.ts"),
   ]);
-  assert.match(version, /"33"/);
+  assert.match(version, /"34"/);
   assert.match(route, /runtimeVersion/);
   assert.match(route, /cache-control.*no-store/s);
   assert.doesNotMatch(route, /token|email|workspace|scene|attachment/i);
