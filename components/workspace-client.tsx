@@ -1,6 +1,7 @@
 "use client";
 import {
   FormEvent,
+  ClipboardEvent as ReactClipboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -14,16 +15,19 @@ import {
   Check,
   Copy,
   CircleDot,
+  ClipboardPaste,
   Cloud,
   CloudOff,
   ExternalLink,
   FileText,
+  Image as ImageIcon,
   Link2,
   Loader2,
   Plus,
   RefreshCw,
   Redo2,
   Undo2,
+  Upload,
   Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -82,6 +86,13 @@ type SceneConfluenceSource = {
   last_synced_at: string;
   last_checked_at?: string;
   last_error?: string | null;
+};
+type ManualImageSlot = {
+  slotKey: string;
+  label: string;
+  status: "saved" | "missing" | "error" | "uploading";
+  src?: string | null;
+  error?: string;
 };
 type ConfluenceStatus = {
   state: "unconfigured" | "available" | "connected" | "reauth_required";
@@ -183,6 +194,15 @@ export function WorkspaceClient({
     type: "progress" | "success" | "error";
     message: string;
   } | null>(null);
+  const [manualSlots, setManualSlots] = useState<ManualImageSlot[]>([]);
+  const [manualUpload, setManualUpload] = useState<{
+    active: boolean;
+    completed: number;
+    total: number;
+    message: string;
+  }>({ active: false, completed: 0, total: 0, message: "" });
+  const [manualDragActive, setManualDragActive] = useState(false);
+  const preferredPasteSlot = useRef<string>("");
   const [confluenceStatus, setConfluenceStatus] = useState<ConfluenceStatus | null>(null);
   const [sceneDialogOpen, setSceneDialogOpen] = useState(false),
     [sceneTitle, setSceneTitle] = useState(""),
@@ -308,6 +328,8 @@ export function WorkspaceClient({
     const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous scene immediately so stale Confluence content is never shown.
     setSceneSource(null);
+    setManualSlots([]);
+    setManualUpload({ active: false, completed: 0, total: 0, message: "" });
     setSyncFeedback(null);
     setPageInput(active?.confluence_page_url ?? "");
     if (!sceneId) {
@@ -322,11 +344,13 @@ export function WorkspaceClient({
       .then(async (response) => {
         const result = (await response.json()) as {
           source?: SceneConfluenceSource | null;
+          slots?: ManualImageSlot[];
           error?: string;
         };
         if (!response.ok) throw new Error(result.error);
         if (sequence !== sourceRequestSequence.current) return;
         setSceneSource(result.source ?? null);
+        setManualSlots(result.slots ?? []);
         setPageInput(result.source?.page_url ?? active?.confluence_page_url ?? "");
       })
       .catch((reason) => {
@@ -590,6 +614,15 @@ export function WorkspaceClient({
       }
       setSceneSource(d.source);
       setPageInput(d.source.page_url);
+      const refreshed = await fetch(
+        `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(active.id)}`,
+        { cache: "no-store" },
+      ).then(async (response) => response.ok ? response.json() as Promise<{
+        source?: SceneConfluenceSource;
+        slots?: ManualImageSlot[];
+      }> : null).catch(() => null);
+      if (refreshed?.source) setSceneSource(refreshed.source);
+      if (refreshed?.slots) setManualSlots(refreshed.slots);
       setData((previous) =>
         previous
           ? {
@@ -612,6 +645,117 @@ export function WorkspaceClient({
     } finally {
       setSyncing(false);
     }
+  }
+  function normalizedUploadName(value: string) {
+    let decoded = value.trim();
+    try { decoded = decodeURIComponent(decoded); } catch { /* keep original */ }
+    return (decoded.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "")
+      .normalize("NFKC").toLocaleLowerCase("en-US");
+  }
+  async function uploadManualImages(assignments: Array<{ slot: ManualImageSlot; file: File }>) {
+    if (!active || manualUpload.active || !assignments.length) return;
+    const total = assignments.length;
+    setManualUpload({ active: true, completed: 0, total, message: `${total}件中0件を保存しています…` });
+    setManualSlots((previous) => previous.map((slot) =>
+      assignments.some((item) => item.slot.slotKey === slot.slotKey)
+        ? { ...slot, status: "uploading", error: undefined }
+        : slot));
+    const form = new FormData();
+    const metadata = assignments.map((item, index) => {
+      const field = `image_${index}`;
+      form.append(field, item.file, item.file.name);
+      return { field, slotKey: item.slot.slotKey };
+    });
+    form.append("assignments", JSON.stringify(metadata));
+    try {
+      const result = await new Promise<{
+        message?: string;
+        error?: string;
+        runtimeVersion?: string;
+        saved?: number;
+        totalSaved?: number;
+        slots?: ManualImageSlot[];
+        source?: { synced_html?: string };
+      }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(active.id)}/images`);
+        xhr.setRequestHeader("x-plotline-csrf", "manual-confluence-image");
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          const completed = Math.min(total - 1, Math.floor((event.loaded / event.total) * total));
+          setManualUpload({ active: true, completed, total, message: `${total}件中${completed}件を送信しました…` });
+        };
+        xhr.onerror = () => reject(new Error("画像アップロードAPIと通信できませんでした。"));
+        xhr.onload = () => {
+          let body: { error?: string } = {};
+          try { body = JSON.parse(xhr.responseText); } catch { /* safe generic error below */ }
+          if (xhr.status < 200 || xhr.status >= 300)
+            return reject(new Error(body.error ?? "画像を保存できませんでした。"));
+          resolve(body);
+        };
+        xhr.send(form);
+      });
+      setManualSlots(result.slots ?? []);
+      if (result.source?.synced_html)
+        setSceneSource((previous) => previous ? { ...previous, synced_html: result.source!.synced_html! } : previous);
+      const saved = result.saved ?? total;
+      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "30"}`;
+      setManualUpload({ active: false, completed: total, total, message });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "画像を保存できませんでした。";
+      setManualSlots((previous) => previous.map((slot) =>
+        assignments.some((item) => item.slot.slotKey === slot.slotKey)
+          ? { ...slot, status: "error", error: message }
+          : slot));
+      setManualUpload({ active: false, completed: 0, total, message });
+    }
+  }
+  function assignSelectedFiles(files: File[]) {
+    const available = manualSlots.filter((slot) => slot.status !== "saved");
+    const used = new Set<string>();
+    const assignments: Array<{ slot: ManualImageSlot; file: File }> = [];
+    for (const file of files.slice(0, 30)) {
+      const name = normalizedUploadName(file.name);
+      const slot = available.find((candidate) => !used.has(candidate.slotKey)
+        && normalizedUploadName(candidate.label) === name);
+      if (!slot) continue;
+      used.add(slot.slotKey);
+      assignments.push({ slot, file });
+    }
+    if (!assignments.length) {
+      setManualUpload({
+        active: false, completed: 0, total: files.length,
+        message: "ファイル名が一致しませんでした。欠損画像カードの「ファイルを選ぶ」または貼り付けを使ってください。",
+      });
+      return;
+    }
+    void uploadManualImages(assignments);
+  }
+  async function pasteFromClipboard(slot: ManualImageSlot) {
+    preferredPasteSlot.current = slot.slotKey;
+    try {
+      if (!navigator.clipboard?.read) throw new Error("clipboard read unavailable");
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((value) => ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(value));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        const extension = type === "image/jpeg" ? "jpg" : type.split("/")[1];
+        await uploadManualImages([{ slot, file: new File([blob], `clipboard.${extension}`, { type }) }]);
+        return;
+      }
+      throw new Error("image unavailable");
+    } catch {
+      setManualUpload({ active: false, completed: 0, total: 1, message: "クリップボード画像を読み取れませんでした。画像をコピーして、この欄でCtrl+Vを押してください。" });
+    }
+  }
+  function handleManualPaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    const file = [...event.clipboardData.files].find((value) => value.type.startsWith("image/"));
+    const slot = manualSlots.find((item) => item.slotKey === preferredPasteSlot.current)
+      ?? manualSlots.find((item) => item.status !== "saved");
+    if (!file || !slot) return;
+    event.preventDefault();
+    void uploadManualImages([{ slot, file }]);
   }
   async function unlinkConfluenceSource() {
     if (!active || syncing) return;
@@ -987,7 +1131,7 @@ export function WorkspaceClient({
                           {sceneSource ? "Confluenceを変更" : "Confluenceを追加"}
                         </Button>
                       </DialogTrigger>
-                      <DialogContent>
+                      <DialogContent className="confluence-dialog">
                         <DialogHeader>
                           <DialogTitle>
                             「{active.title || "無題"}」のConfluence
@@ -1102,6 +1246,105 @@ export function WorkspaceClient({
                               </p>
                             )}
                           </>
+                        )}
+                        {sceneSource && (
+                          <section
+                            className={`manual-image-import${manualDragActive ? " is-dragging" : ""}`}
+                            aria-labelledby="manual-image-import-title"
+                            onPaste={handleManualPaste}
+                            onDragEnter={(event) => { event.preventDefault(); setManualDragActive(true); }}
+                            onDragOver={(event) => { event.preventDefault(); setManualDragActive(true); }}
+                            onDragLeave={(event) => {
+                              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setManualDragActive(false);
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              setManualDragActive(false);
+                              assignSelectedFiles([...event.dataTransfer.files]);
+                            }}
+                            tabIndex={0}
+                          >
+                            <div className="manual-image-heading">
+                              <div>
+                                <h4 id="manual-image-import-title">別の方法で画像を追加</h4>
+                                <p>Confluence画像をまとめて選ぶか、この欄へドラッグ＆ドロップしてください。ファイル名が一致する場所へ自動で割り当てます。</p>
+                              </div>
+                              <Button asChild type="button" variant="outline" disabled={manualUpload.active || !manualSlots.length}>
+                                <label htmlFor="manual-confluence-images">
+                                  <Upload size={15} />画像をまとめて選ぶ
+                                </label>
+                              </Button>
+                              <input
+                                id="manual-confluence-images"
+                                className="visually-hidden"
+                                type="file"
+                                accept="image/png,image/jpeg,image/gif,image/webp"
+                                multiple
+                                disabled={manualUpload.active}
+                                onChange={(event) => {
+                                  assignSelectedFiles([...(event.currentTarget.files ?? [])]);
+                                  event.currentTarget.value = "";
+                                }}
+                              />
+                            </div>
+                            {manualUpload.message && (
+                              <p className={manualUpload.active || manualUpload.completed > 0 ? "sync-feedback" : "form-error"} role="status" aria-live="polite">
+                                {manualUpload.active && <Loader2 size={15} className="spin" />}
+                                {manualUpload.message}
+                              </p>
+                            )}
+                            {!manualSlots.length ? (
+                              <p className="manual-image-empty">本文を同期すると、欠損画像の追加場所がここに表示されます。</p>
+                            ) : (
+                              <div className="manual-image-slots">
+                                {manualSlots.map((slot) => (
+                                  <article className="manual-image-slot" key={slot.slotKey}>
+                                    <div className="manual-image-preview">
+                                      {slot.src ? <img src={slot.src} alt="" /> : <ImageIcon size={22} aria-hidden="true" />}
+                                    </div>
+                                    <div className="manual-image-copy">
+                                      <strong>{slot.label}</strong>
+                                      <span className={`manual-image-status is-${slot.status}`}>
+                                        {slot.status === "saved" ? "保存済み" : slot.status === "uploading" ? "保存中" : slot.status === "error" ? "失敗" : "未設定"}
+                                      </span>
+                                      {slot.error && <small>{slot.error}</small>}
+                                    </div>
+                                    <div className="manual-image-actions">
+                                      <Button asChild type="button" size="sm" variant="outline" disabled={manualUpload.active}>
+                                        <label htmlFor={`manual-slot-${slot.slotKey}`}>
+                                          {slot.status === "saved" ? "選び直す" : "ファイルを選ぶ"}
+                                        </label>
+                                      </Button>
+                                      <input
+                                        id={`manual-slot-${slot.slotKey}`}
+                                        className="visually-hidden"
+                                        type="file"
+                                        accept="image/png,image/jpeg,image/gif,image/webp"
+                                        disabled={manualUpload.active}
+                                        onChange={(event) => {
+                                          const file = event.currentTarget.files?.[0];
+                                          if (file) void uploadManualImages([{ slot, file }]);
+                                          event.currentTarget.value = "";
+                                        }}
+                                      />
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={manualUpload.active}
+                                        onFocus={() => { preferredPasteSlot.current = slot.slotKey; }}
+                                        onClick={() => void pasteFromClipboard(slot)}
+                                        aria-label={`${slot.label}へクリップボード画像を貼り付け`}
+                                      >
+                                        <ClipboardPaste size={14} />貼り付け
+                                      </Button>
+                                    </div>
+                                  </article>
+                                ))}
+                              </div>
+                            )}
+                            <p className="manual-image-note">PNG・JPEG・GIF・WebP、1枚10MiB以下。画像をコピーした後、この欄でCtrl+Vしても追加できます。</p>
+                          </section>
                         )}
                       </DialogContent>
                     </Dialog>

@@ -165,14 +165,14 @@ test("thumbnail失敗を最終段階として返す", async () => {
   assert.equal(result.ok, true);
 });
 
-test("5 logical imagesの同一原因は失敗5件・根本診断1件へ集約する", () => {
+test("画像配信先401は5件を1つのCDN原因へ集約し、token失効に誤分類しない", () => {
   const diagnostics = Array.from({ length: 5 }, () => ({
     stages: [{ stage: "verified_export_view", status: 401, hostCategory: "oauth_gateway" }],
     final: "scope_missing",
     finalCode: "ATTACHMENT_PERMISSION",
   }));
   const root = aggregateResolverDiagnostics(diagnostics, 5);
-  assert.equal(root?.code, "IMG-TOKEN-401");
+  assert.equal(root?.code, "IMG-CDN-401");
   assert.equal(root?.logicalImageCount, 5);
 });
 

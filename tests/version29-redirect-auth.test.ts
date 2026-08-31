@@ -164,12 +164,12 @@ test("MIME magic bytesと10MiB上限を維持する", async () => {
   assert.equal(tooLarge.ok, false);
 });
 
-test("runtimeVersion 29・UI表示・no-storeを公開する", async () => {
+test("runtimeVersion 30・UI表示・no-storeを公開する", async () => {
   const [version, runtime, sync, ui] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"), read("components/workspace-client.tsx"),
   ]);
-  assert.match(version, /"29"/);
+  assert.match(version, /"30"/);
   assert.match(runtime, /cache-control.*no-store/s);
   assert.match(sync, /runtimeVersion: PLOTLINE_RUNTIME_VERSION/);
   assert.match(sync, /cache-control", "no-store/);

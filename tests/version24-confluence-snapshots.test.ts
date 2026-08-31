@@ -90,10 +90,11 @@ test("D1 migrationは場面別assetと256KiB BLOB chunk、世代列を追加す�
   assert.match(helper, /start \+ 40/);
 });
 
-test("新世代は全画像成功後だけ切替え、失敗時は旧世代を保持してcleanupする", async () => {
+test("新世代は全画像成功後だけ切替え、失敗時は旧画像を保持して本文同期を続ける", async () => {
   const sync = await read("app/api/workspaces/[slug]/confluence/sync/route.ts");
-  assert.match(sync, /if \(snapshots\.failures\.length\)/);
-  assert.match(sync, /前回の同期結果を保持しました/);
+  assert.match(sync, /snapshots\.failures\.length/);
+  assert.match(sync, /manualFallbackAvailable: true/);
+  assert.match(sync, /画像は下の「別の方法で画像を追加」/);
   assert.match(sync, /stageSceneAssets[\s\S]*asset_generation/);
   assert.match(sync, /generation<>\?3/);
   assert.match(sync, /catch \(error\)[\s\S]*discardSceneAssetGeneration/);
@@ -107,7 +108,9 @@ test("asset routeはmembership・scene/page/generation関連を検証し削除�
   ]);
   assert.match(route, /authorizeWorkspace/);
   assert.match(route, /auth\.membership\.workspace_id !== workspaceId/);
-  assert.match(route, /src\.page_id=a\.page_id AND src\.asset_generation=a\.generation/);
+  assert.match(route, /src\.page_id=a\.page_id/);
+  assert.match(route, /src\.asset_generation=a\.generation OR EXISTS/);
+  assert.match(route, /m\.generation=src\.manual_generation/);
   assert.match(route, /ORDER BY chunk_index/);
   assert.match(scenes, /DELETE FROM scene_confluence_assets/);
   assert.match(unlink, /DELETE FROM scene_confluence_assets/);

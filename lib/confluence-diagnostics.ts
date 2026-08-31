@@ -98,7 +98,7 @@ export function classifyBinaryFailure(
   const last = result.trace.at(-1);
   const category = last?.hostCategory ?? "oauth_gateway";
   const actualStatus = last?.status ?? result.status;
-  if (actualStatus === 401 && last?.sentAuthorization === false)
+  if (actualStatus === 401 && (last?.sentAuthorization === false || category !== "oauth_gateway"))
     return makeDiagnostic("IMG-CDN-401", "image_cdn", actualStatus, category, "cdn_fetch_failed", logicalImageCount);
   if (actualStatus === 403 && last?.sentAuthorization === false)
     return makeDiagnostic("IMG-CDN-403", "image_cdn", actualStatus, category, "cdn_fetch_failed", logicalImageCount);
@@ -129,7 +129,9 @@ export function tokenDiagnostic(kind: "missing" | "decrypt_failed") {
 }
 
 export function diagnosticNeedsReconnect(diagnostic: SafeImageDiagnostic) {
-  return diagnostic.finalReason === "token_invalid" || diagnostic.finalReason === "scope_or_site_permission";
+  return diagnostic.hostCategory === "oauth_gateway"
+    && diagnostic.requestStage !== "image_cdn"
+    && (diagnostic.finalReason === "token_invalid" || diagnostic.finalReason === "scope_or_site_permission");
 }
 
 export function diagnosticNextAction(diagnostic: SafeImageDiagnostic) {
@@ -169,7 +171,7 @@ export function aggregateResolverDiagnostics(
             ? "thumbnail_download"
             : "image_cdn";
     const status = failing?.status ?? 0;
-    if (status === 401 && failing?.sentAuthorization === false)
+    if (status === 401 && (failing?.sentAuthorization === false || failing?.hostCategory !== "oauth_gateway" || requestStage === "image_cdn"))
       return makeDiagnostic("IMG-CDN-401", "image_cdn", status, failing.hostCategory, "cdn_fetch_failed", logicalImageCount);
     if (status === 403 && failing?.sentAuthorization === false)
       return makeDiagnostic("IMG-CDN-403", "image_cdn", status, failing.hostCategory, "cdn_fetch_failed", logicalImageCount);

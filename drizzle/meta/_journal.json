@@ -64,6 +64,13 @@
       "when": 1788131128264,
       "tag": "0008_medical_kingpin",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788170544832,
+      "tag": "0009_blushing_sunfire",
+      "breakpoints": true
     }
   ]
 }

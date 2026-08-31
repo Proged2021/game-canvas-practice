@@ -86,14 +86,17 @@ function absolute(value: string, base: string, image = false) {
 export function sanitizeConfluenceHtml(
   html: string,
   baseUrl: string,
-  imageResolver?: (absoluteSource: string, attributes: Record<string, string>) => string | null,
+  imageResolver?: (absoluteSource: string, attributes: Record<string, string>) => string | null | {
+    src: string | null;
+    attributes?: Record<string, string>;
+  },
 ) {
   return sanitizeHtml(html, {
     allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img", "figure", "figcaption", "details", "summary", "time", "mark", "thead", "tbody", "tfoot"]),
     allowedAttributes: {
       "*": ["class", "title", "data-layout", "data-local-id"],
       a: ["href", "name", "target", "rel", "class", "title"],
-      img: ["src", "alt", "title", "width", "height", "class", "loading"],
+      img: ["src", "alt", "title", "width", "height", "class", "loading", "data-confluence-slot", "data-confluence-slot-label"],
       td: ["colspan", "rowspan"], th: ["colspan", "rowspan", "scope"],
     },
     allowedSchemes: ["http", "https", "mailto"],
@@ -102,9 +105,12 @@ export function sanitizeConfluenceHtml(
       a: (_tag, attrs) => ({ tagName: "a", attribs: { ...attrs, href: absolute(attrs.href ?? "", baseUrl), target: "_blank", rel: "noopener noreferrer" } }),
       img: (_tag, attrs) => {
         const source = absolute(attrs.src ?? "", baseUrl, true);
-        const rewritten = imageResolver ? imageResolver(source, attrs) : source;
+        const resolved = imageResolver ? imageResolver(source, attrs) : source;
+        const rewritten = resolved && typeof resolved === "object" ? resolved.src : resolved;
+        const extra = resolved && typeof resolved === "object" ? resolved.attributes ?? {} : {};
         return { tagName: "img", attribs: {
           ...attrs,
+          ...extra,
           src: rewritten ?? "",
           alt: attrs.alt || (rewritten ? "" : "画像を表示できません"),
           title: attrs.title || (rewritten ? "" : "画像を表示できません"),
@@ -272,7 +278,7 @@ export function extractConfluenceAdfImageReferences(value: unknown) {
   return references;
 }
 
-function storageImagesToViewHtml(html: string, baseUrl: string, pageId: string) {
+export function storageImagesToViewHtml(html: string, baseUrl: string, pageId: string) {
   return html.replace(
     /<(?:[\w.-]+:)?image\b([^>]*)>([\s\S]*?)<\/(?:[\w.-]+:)?image\s*>/gi,
     (whole, imageAttributes: string, inner: string) => {

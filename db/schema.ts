@@ -129,6 +129,7 @@ export const sceneConfluenceSources = sqliteTable(
     lastCheckedAt: text("last_checked_at"),
     lastError: text("last_error"),
     assetGeneration: text("asset_generation"),
+    manualGeneration: text("manual_generation"),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
@@ -149,11 +150,32 @@ export const sceneConfluenceAssets = sqliteTable(
     byteSize: integer("byte_size").notNull(),
     sha256: text("sha256").notNull(),
     generation: text("generation").notNull(),
+    provenance: text("provenance", { enum: ["automatic", "manual"] }).notNull().default("automatic"),
+    slotKey: text("slot_key"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     index("scene_confluence_assets_generation_idx").on(table.workspaceId, table.sceneId, table.generation),
     index("scene_confluence_assets_page_idx").on(table.workspaceId, table.sceneId, table.pageId),
+  ],
+);
+
+export const sceneConfluenceManualAssets = sqliteTable(
+  "scene_confluence_manual_assets",
+  {
+    generation: text("generation").notNull(),
+    slotKey: text("slot_key").notNull(),
+    assetKey: text("asset_key").notNull().references(() => sceneConfluenceAssets.assetKey, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id").notNull().references(() => scenes.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    provenance: text("provenance", { enum: ["manual"] }).notNull().default("manual"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.generation, table.slotKey] }),
+    index("scene_confluence_manual_assets_scene_idx").on(table.workspaceId, table.sceneId, table.generation),
+    uniqueIndex("scene_confluence_manual_assets_asset_idx").on(table.assetKey, table.generation),
   ],
 );
 

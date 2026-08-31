@@ -9,6 +9,7 @@ import {
 } from "@/lib/confluence";
 import {
   discardSceneAssetGeneration,
+  loadManualSceneAssets,
   stageSceneAssets,
 } from "@/lib/confluence-assets";
 import { fetchConfluenceImageSnapshots, SNAPSHOT_FAILURE_MESSAGES } from "@/lib/confluence-snapshot";
@@ -25,12 +26,15 @@ import {
 import { dedupeConfluenceImageReferences } from "@/lib/confluence-snapshot";
 import { PLOTLINE_RUNTIME_VERSION } from "@/lib/runtime-version";
 import {
+  buildConfluenceImageSlots,
+  renderConfluenceHtmlWithSlots,
+} from "@/lib/confluence-manual-images";
+import {
   extractConfluenceAdfImageReferences,
   extractConfluenceHtmlImageReferences,
   extractConfluenceStorageImageReferences,
   normalizeConfluenceFilename,
-  sanitizeConfluenceHtmlWithAttachments,
-  type ConfluenceAttachmentDescriptor,
+  storageImagesToViewHtml,
 } from "@/lib/confluence-safe";
 
 type SyncFailure = {
@@ -117,7 +121,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
   const source = await db()
     .prepare("SELECT * FROM scene_confluence_sources WHERE scene_id=?1 AND workspace_id=?2")
     .bind(sceneId, auth.membership.workspace_id)
-    .first<{ page_id: string; page_version: number }>();
+    .first<{ page_id: string; page_version: number; asset_generation: string | null; manual_generation: string | null }>();
   const connection = await getConnection(auth.membership.workspace_id);
   if (!connection?.access_token_ciphertext || !connection.cloud_id) {
     const diagnostic = tokenDiagnostic("missing");
@@ -230,21 +234,21 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
     ];
     const logicalImageCount = dedupeConfluenceImageReferences(pageId, representations).length;
-    if (capabilityDiagnostic && logicalImageCount > 0) {
-      const diagnostic = withLogicalImageCount(capabilityDiagnostic, logicalImageCount);
-      console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);
-      return saveFailure(auth.membership.workspace_id, sceneId, imageDiagnosticFailure(diagnostic), {
-        diagnostic,
-        assets: { saved: 0, failed: logicalImageCount, reasons: { [diagnostic.finalReason]: logicalImageCount } },
-      });
-    }
-    const snapshots = await fetchConfluenceImageSnapshots({
-      cloudId: connection.cloud_id,
-      cloudUrl: connection.cloud_url ?? "https://www.atlassian.com",
-      pageId,
-      token,
-      representations,
-    });
+    const snapshots = capabilityDiagnostic
+      ? {
+          references: dedupeConfluenceImageReferences(pageId, representations),
+          assets: [],
+          failures: Array.from({ length: logicalImageCount }, () => "fetch_failed" as const),
+          diagnostics: [],
+          warnings: [] as SafeDiagnosticWarning[],
+        }
+      : await fetchConfluenceImageSnapshots({
+          cloudId: connection.cloud_id,
+          cloudUrl: connection.cloud_url ?? "https://www.atlassian.com",
+          pageId,
+          token,
+          representations,
+        });
     const diagnosticWarnings = [...capabilityWarnings, ...snapshots.warnings];
     if (diagnosticWarnings.length) {
       const grouped = diagnosticWarnings.reduce<Record<string, { warning: SafeDiagnosticWarning; count: number }>>((result, warning) => {
@@ -257,24 +261,27 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     }
     for (const diagnostic of snapshots.diagnostics)
       console.info("CONFLUENCE_IMAGE_RESOLVER", diagnostic);
-    if (snapshots.failures.length) {
+    const imageDiagnostic = capabilityDiagnostic
+      ? withLogicalImageCount(capabilityDiagnostic, logicalImageCount)
+      : aggregateResolverDiagnostics(snapshots.diagnostics, snapshots.references.length);
+    let imageWarnings: string[] = [];
+    if (snapshots.failures.length || imageDiagnostic) {
       const counts = snapshots.failures.reduce<Record<string, number>>((result, code) => {
         result[code] = (result[code] ?? 0) + 1; return result;
       }, {});
-      const messages = Object.keys(counts).map((code) => `${SNAPSHOT_FAILURE_MESSAGES[code as keyof typeof SNAPSHOT_FAILURE_MESSAGES]}（${counts[code]}件）`);
-      const diagnostic = aggregateResolverDiagnostics(snapshots.diagnostics, snapshots.references.length);
-      if (diagnostic) console.info("CONFLUENCE_IMAGE_ROOT_CAUSE", diagnostic);
-      const scopeMissing = diagnostic ? diagnosticNeedsReconnect(diagnostic) : false;
-      return saveFailure(auth.membership.workspace_id, sceneId, diagnostic ? imageDiagnosticFailure(diagnostic) : {
-        error: `画像を安全に内部保存できなかったため、前回の同期結果を保持しました。${messages.join(" ")}`,
-        nextAction: scopeMissing ? "「Atlassianに再接続」を押して画像権限を許可し、再同期してください。" : "時間をおいてから、もう一度同期してください。",
-        code: scopeMissing ? "ATTACHMENT_REAUTH_REQUIRED" : "IMAGE_SNAPSHOT_FAILED",
-        status: scopeMissing ? 409 : 422,
-      }, { diagnostic, diagnosticWarnings, assets: { saved: 0, failed: snapshots.failures.length, reasons: counts } });
+      if (imageDiagnostic) console.info("CONFLUENCE_IMAGE_ROOT_CAUSE", imageDiagnostic);
+      imageWarnings = [
+        imageDiagnostic
+          ? `Confluence画像の自動取得に失敗しました（${imageDiagnostic.code} / ${imageDiagnostic.stage}）。`
+          : Object.keys(counts).map((code) => `${SNAPSHOT_FAILURE_MESSAGES[code as keyof typeof SNAPSHOT_FAILURE_MESSAGES]}（${counts[code]}件）`).join(" "),
+        "本文は更新しました。画像は下の「別の方法で画像を追加」から内部保存できます。",
+      ];
     }
 
-    const generation = crypto.randomUUID();
-    await stageSceneAssets({
+    const automaticSuccess = logicalImageCount === 0
+      || (snapshots.failures.length === 0 && snapshots.assets.length >= logicalImageCount);
+    const generation = automaticSuccess && snapshots.assets.length ? crypto.randomUUID() : null;
+    if (generation) await stageSceneAssets({
       workspaceId: auth.membership.workspace_id,
       sceneId,
       pageId,
@@ -282,31 +289,26 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       assets: snapshots.assets.map(({ assetKey, filename, mime, bytes, sha256 }) => ({ assetKey, filename, mime, bytes, sha256 })),
     });
     const proxyPrefix = `/api/workspaces/${encodeURIComponent(auth.membership.workspace_id)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
-    const rendered = sanitizeConfluenceHtmlWithAttachments(
-      viewHtml || exportHtml || storageHtml,
-      connection.cloud_url ?? "https://www.atlassian.com",
-      snapshots.assets.map((asset) => ({
-        id: asset.assetKey,
-        title: asset.filename,
-        fileName: asset.filename,
-        fileId: asset.reference.fileId,
-        pageId,
-        mediaType: asset.mime,
-        fileSize: asset.bytes.byteLength,
-        downloadLink: asset.reference.sourceUrl ?? `/wiki/download/attachments/${pageId}/${encodeURIComponent(asset.filename)}`,
-      } satisfies ConfluenceAttachmentDescriptor)),
+    const baseUrl = connection.cloud_url ?? "https://www.atlassian.com";
+    const contentHtml = viewHtml || exportHtml || storageImagesToViewHtml(storageHtml, baseUrl, pageId);
+    const primaryReferences = viewHtml
+      ? extractConfluenceHtmlImageReferences(viewHtml, baseUrl)
+      : exportHtml
+        ? extractConfluenceHtmlImageReferences(exportHtml, baseUrl)
+        : extractConfluenceStorageImageReferences(storageHtml);
+    const slots = await buildConfluenceImageSlots(pageId, primaryReferences);
+    const manualAssets = await loadManualSceneAssets(auth.membership.workspace_id, sceneId, pageId);
+    const rendered = renderConfluenceHtmlWithSlots({
+      html: contentHtml,
+      baseUrl,
+      slots,
       proxyPrefix,
-      storageHtml,
-    );
-    if (rendered.missingImages > 0) {
-      await discardSceneAssetGeneration(auth.membership.workspace_id, sceneId, generation);
-      return saveFailure(auth.membership.workspace_id, sceneId, {
-        error: "画像の内部保存には成功しましたが、本文への安全な埋め込みに失敗したため前回の同期結果を保持しました。",
-        nextAction: "時間をおいて再同期してください。",
-        code: "IMAGE_REWRITE_FAILED",
-        status: 422,
-      }, { assets: { saved: 0, failed: rendered.missingImages } });
-    }
+      manualAssets: new Map(manualAssets.map((asset) => [asset.slot_key, asset.asset_key])),
+      automaticAssets: generation ? snapshots.assets.map((asset) => ({
+        assetKey: asset.assetKey,
+        normalizedFilename: normalizeConfluenceFilename(asset.filename),
+      })) : [],
+    });
     const storageReferences = extractConfluenceStorageImageReferences(storageHtml);
     console.info("CONFLUENCE_SYNC_DIAGNOSTIC", {
       assetSnapshotStatus: 200,
@@ -321,30 +323,33 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     const pageUrl = parsed.originalUrl ?? (page._links?.webui ? new URL(page._links.webui, connection.cloud_url).toString() : connection.cloud_url);
     const syncedAt = new Date().toISOString();
     const database = db();
+    const samePage = source?.page_id === pageId;
+    const nextAssetGeneration = generation ?? (samePage ? source?.asset_generation ?? null : null);
+    const nextManualGeneration = samePage ? source?.manual_generation ?? null : null;
     const statements = [
       database
         .prepare(`INSERT INTO scene_confluence_sources
-          (scene_id,workspace_id,page_id,page_url,page_title,page_version,synced_html,last_synced_at,last_checked_at,last_error,asset_generation)
-          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,NULL,?9)
+          (scene_id,workspace_id,page_id,page_url,page_title,page_version,synced_html,last_synced_at,last_checked_at,last_error,asset_generation,manual_generation)
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,NULL,?9,?10)
           ON CONFLICT(scene_id) DO UPDATE SET page_id=excluded.page_id,page_url=excluded.page_url,
           page_title=excluded.page_title,page_version=excluded.page_version,synced_html=excluded.synced_html,
           last_synced_at=excluded.last_synced_at,last_checked_at=excluded.last_checked_at,
-          last_error=NULL,asset_generation=excluded.asset_generation,updated_at=CURRENT_TIMESTAMP`)
-        .bind(sceneId, auth.membership.workspace_id, page.id, pageUrl, page.title, page.version.number, rendered.html, syncedAt, generation),
+          last_error=NULL,asset_generation=excluded.asset_generation,manual_generation=excluded.manual_generation,updated_at=CURRENT_TIMESTAMP`)
+        .bind(sceneId, auth.membership.workspace_id, page.id, pageUrl, page.title, page.version.number, rendered.html, syncedAt, nextAssetGeneration, nextManualGeneration),
       database
         .prepare("UPDATE scenes SET confluence_page_url=?1 WHERE id=?2 AND workspace_id=?3")
         .bind(pageUrl, sceneId, auth.membership.workspace_id),
       database
         .prepare("UPDATE confluence_connections SET attachment_scope_granted=1,last_error=NULL WHERE workspace_id=?1")
         .bind(auth.membership.workspace_id),
-      database
-        .prepare("DELETE FROM scene_confluence_assets WHERE workspace_id=?1 AND scene_id=?2 AND generation<>?3")
-        .bind(auth.membership.workspace_id, sceneId, generation),
+      ...(generation ? [database
+        .prepare("DELETE FROM scene_confluence_assets WHERE workspace_id=?1 AND scene_id=?2 AND provenance='automatic' AND generation<>?3")
+        .bind(auth.membership.workspace_id, sceneId, generation)] : []),
     ];
     try {
       await database.batch(statements);
     } catch (error) {
-      await discardSceneAssetGeneration(auth.membership.workspace_id, sceneId, generation);
+      if (generation) await discardSceneAssetGeneration(auth.membership.workspace_id, sceneId, generation);
       throw error;
     }
     const sceneSource = {
@@ -358,15 +363,21 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       last_checked_at: syncedAt,
       last_error: null,
     };
-    const warnings = diagnosticWarnings.length
-      ? ["添付情報の補足取得に失敗しましたが、添付一覧から画像を取得しました。"]
-      : [];
+    const warnings = [
+      ...(diagnosticWarnings.length
+        ? ["添付情報の補足取得に失敗しましたが、利用できる取得経路を続行しました。"]
+        : []),
+      ...imageWarnings,
+    ];
     return noStoreJson({
       message: "同期しました",
       runtimeVersion: PLOTLINE_RUNTIME_VERSION,
       warnings,
       diagnosticWarnings,
-      assets: { saved: snapshots.assets.length, failed: 0 },
+      diagnostic: imageDiagnostic,
+      manualFallbackAvailable: true,
+      assets: { saved: generation ? snapshots.assets.length : 0, failed: snapshots.failures.length || (imageDiagnostic ? logicalImageCount : 0) },
+      slots: slots.map((slot) => ({ slotKey: slot.slotKey, label: slot.label })),
       source: sceneSource,
     });
   } catch (error) {

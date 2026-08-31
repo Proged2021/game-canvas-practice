@@ -23,8 +23,13 @@ export async function GET(
     FROM scene_confluence_assets a
     JOIN scenes sc ON sc.id=a.scene_id AND sc.workspace_id=a.workspace_id
     JOIN scene_confluence_sources src ON src.scene_id=a.scene_id AND src.workspace_id=a.workspace_id
-      AND src.page_id=a.page_id AND src.asset_generation=a.generation
-    WHERE a.asset_key=?1 AND a.workspace_id=?2 AND a.scene_id=?3`)
+      AND src.page_id=a.page_id
+    WHERE a.asset_key=?1 AND a.workspace_id=?2 AND a.scene_id=?3
+      AND (src.asset_generation=a.generation OR EXISTS (
+        SELECT 1 FROM scene_confluence_manual_assets m
+        WHERE m.asset_key=a.asset_key AND m.workspace_id=a.workspace_id AND m.scene_id=a.scene_id
+          AND m.page_id=a.page_id AND m.generation=src.manual_generation
+      ))`)
     .bind(assetKey, workspaceId, sceneId)
     .first<{ mime: string; byte_size: number }>();
   if (!asset || !SAFE_IMAGE_MEDIA_TYPES.has(asset.mime) || asset.byte_size < 0 || asset.byte_size > MAX_CONFLUENCE_IMAGE_BYTES)

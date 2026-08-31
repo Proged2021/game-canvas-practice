@@ -129,7 +129,7 @@ test("proxy binaryはAtlassian redirect後も200 image/pngになりtokenを外�
   assert.equal(authorization[1], null);
 });
 
-test("同期はviewとstorageを取得し再認証を明示、UIは接続済みでも再接続可能", async () => {
+test("同期はviewとstorageを取得し、手動fallbackと必要時だけの再認証を提供する", async () => {
   const [sync, client, start, callback, migration] = await Promise.all([
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"),
     read("components/workspace-client.tsx"),
@@ -140,7 +140,8 @@ test("同期はviewとstorageを取得し再認証を明示、UIは接続済み�
   assert.match(sync, /body-format=view/);
   assert.match(sync, /representationUrl\("storage"\)/);
   assert.match(sync, /fetchConfluenceImageSnapshots/);
-  assert.match(sync, /ATTACHMENT_REAUTH_REQUIRED/);
+  assert.match(sync, /manualFallbackAvailable: true/);
+  assert.match(sync, /diagnosticNeedsReconnect/);
   assert.match(sync, /normalizedFilenameHashes/);
   assert.doesNotMatch(sync, /console\.(?:info|warn|error)[^\n]*filename/i);
   assert.match(client, /権限を更新する場合は、Atlassianへ再接続できます/);
