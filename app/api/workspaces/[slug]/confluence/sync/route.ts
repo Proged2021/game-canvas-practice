@@ -23,6 +23,7 @@ import {
   type SafeDiagnosticWarning,
 } from "@/lib/confluence-diagnostics";
 import { dedupeConfluenceImageReferences } from "@/lib/confluence-snapshot";
+import { PLOTLINE_RUNTIME_VERSION } from "@/lib/runtime-version";
 import {
   extractConfluenceAdfImageReferences,
   extractConfluenceHtmlImageReferences,
@@ -64,15 +65,21 @@ async function saveFailure(workspaceId: string, sceneId: string, failure: SyncFa
       .bind(`${failure.code}: ${failure.error}`, sceneId, workspaceId),
   ]);
   return Response.json(
-    { error: failure.error, nextAction: failure.nextAction, code: failure.code, ...extra },
-    { status: failure.status },
+    { error: failure.error, nextAction: failure.nextAction, code: failure.code, runtimeVersion: PLOTLINE_RUNTIME_VERSION, ...extra },
+    { status: failure.status, headers: { "cache-control": "no-store" } },
   );
+}
+
+function noStoreJson(body: unknown, init: ResponseInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("cache-control", "no-store");
+  return Response.json(body, { ...init, headers });
 }
 
 function imageDiagnosticFailure(diagnostic: SafeImageDiagnostic): SyncFailure {
   const reconnect = diagnosticNeedsReconnect(diagnostic);
   return {
-    error: `Confluence画像の取得能力を確認できませんでした。診断コード: ${diagnostic.code} / ${diagnostic.stage}`,
+    error: `Confluence画像を内部保存できませんでした。診断コード: ${diagnostic.code} / ${diagnostic.stage}`,
     nextAction: diagnosticNextAction(diagnostic),
     code: diagnostic.code,
     status: reconnect ? (diagnostic.httpStatus === 403 ? 403 : 409) : diagnostic.httpStatus === 429 ? 429 : 422,
@@ -101,12 +108,12 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     input = body.page;
   }
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sceneId))
-    return Response.json({ error: "対象場面が指定されていません。", code: "SCENE_REQUIRED" }, { status: 400 });
+    return noStoreJson({ error: "対象場面が指定されていません。", code: "SCENE_REQUIRED", runtimeVersion: PLOTLINE_RUNTIME_VERSION }, { status: 400 });
   const scene = await db()
     .prepare("SELECT id,confluence_page_url FROM scenes WHERE id=?1 AND workspace_id=?2")
     .bind(sceneId, auth.membership.workspace_id)
     .first<{ id: string; confluence_page_url: string | null }>();
-  if (!scene) return Response.json({ error: "場面が見つかりません。" }, { status: 404 });
+  if (!scene) return noStoreJson({ error: "場面が見つかりません。", runtimeVersion: PLOTLINE_RUNTIME_VERSION }, { status: 404 });
   const source = await db()
     .prepare("SELECT * FROM scene_confluence_sources WHERE scene_id=?1 AND workspace_id=?2")
     .bind(sceneId, auth.membership.workspace_id)
@@ -124,11 +131,12 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         ? parseConfluencePage(scene.confluence_page_url)
         : null;
   if (!parsed)
-    return Response.json(
+    return noStoreJson(
       {
         error: "ConfluenceページURLを認識できませんでした。",
         nextAction: "通常のページURL、短縮URL、または数値ページIDを入力してください。",
         code: "INVALID_PAGE_INPUT",
+        runtimeVersion: PLOTLINE_RUNTIME_VERSION,
       },
       { status: 400 },
     );
@@ -197,7 +205,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         .prepare("UPDATE scene_confluence_sources SET last_checked_at=CURRENT_TIMESTAMP,last_error=NULL WHERE scene_id=?1 AND workspace_id=?2")
         .bind(sceneId, auth.membership.workspace_id)
         .run();
-      return Response.json({ hasUpdate, remoteVersion: page.version.number, savedVersion: source?.page_version ?? null });
+      return noStoreJson({ hasUpdate, remoteVersion: page.version.number, savedVersion: source?.page_version ?? null, runtimeVersion: PLOTLINE_RUNTIME_VERSION });
     }
 
     const representationUrl = (format: string) =>
@@ -222,19 +230,13 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       extractConfluenceAdfImageReferences(adfPage?.body?.atlas_doc_format?.value),
     ];
     const logicalImageCount = dedupeConfluenceImageReferences(pageId, representations).length;
-    const capabilityIsBlocking = capabilityDiagnostic
-      && ["token", "accessible_resources", "page", "attachment_list"].includes(capabilityDiagnostic.requestStage);
-    if (capabilityDiagnostic && logicalImageCount > 0 && capabilityIsBlocking) {
+    if (capabilityDiagnostic && logicalImageCount > 0) {
       const diagnostic = withLogicalImageCount(capabilityDiagnostic, logicalImageCount);
       console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);
       return saveFailure(auth.membership.workspace_id, sceneId, imageDiagnosticFailure(diagnostic), {
         diagnostic,
         assets: { saved: 0, failed: logicalImageCount, reasons: { [diagnostic.finalReason]: logicalImageCount } },
       });
-    }
-    if (capabilityDiagnostic && logicalImageCount > 0 && !capabilityIsBlocking) {
-      // v1/thumbnail probeの失敗だけでは止めず、一覧downloadLinkと本文由来の検証済み経路まで試す。
-      console.info("CONFLUENCE_IMAGE_CAPABILITY_NONBLOCKING", withLogicalImageCount(capabilityDiagnostic, logicalImageCount));
     }
     const snapshots = await fetchConfluenceImageSnapshots({
       cloudId: connection.cloud_id,
@@ -359,8 +361,9 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
     const warnings = diagnosticWarnings.length
       ? ["添付情報の補足取得に失敗しましたが、添付一覧から画像を取得しました。"]
       : [];
-    return Response.json({
+    return noStoreJson({
       message: "同期しました",
+      runtimeVersion: PLOTLINE_RUNTIME_VERSION,
       warnings,
       diagnosticWarnings,
       assets: { saved: snapshots.assets.length, failed: 0 },

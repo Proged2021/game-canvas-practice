@@ -558,6 +558,7 @@ export function WorkspaceClient({
         error?: string;
         nextAction?: string;
         message?: string;
+        runtimeVersion?: string;
         warnings?: string[];
         assets?: { saved: number; failed: number; reasons?: Record<string, number> };
         diagnostic?: {
@@ -578,7 +579,8 @@ export function WorkspaceClient({
         const diagnosticDetail = d.diagnostic
           ? `診断コード: ${d.diagnostic.code} / 失敗した段階: ${d.diagnostic.stage}`
           : "";
-        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, countDetail, diagnosticDetail, d.nextAction].filter(Boolean).join(" ");
+        const runtimeDetail = d.runtimeVersion ? `実行版: ${d.runtimeVersion}` : "";
+        const detail = [d.error ?? `同期APIがHTTP ${r.status}を返しました。`, countDetail, diagnosticDetail, d.nextAction, runtimeDetail].filter(Boolean).join(" ");
         setSyncFeedback({ type: "error", message: detail });
         return;
       }
@@ -603,7 +605,8 @@ export function WorkspaceClient({
       setError("");
       const warning = d.warnings?.length ? ` ${d.warnings.join(" ")}` : "";
       const assetResult = d.assets ? ` 画像は${d.assets.saved}件を取得・内部保存し、失敗は${d.assets.failed}件でした。` : "";
-      setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${assetResult}${warning}` });
+      const runtimeDetail = d.runtimeVersion ? ` 実行版: ${d.runtimeVersion}` : "";
+      setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${assetResult}${warning}${runtimeDetail}` });
     } catch {
       setSyncFeedback({ type: "error", message: "同期APIと通信できませんでした。ネットワークを確認し、時間をおいて1回だけ再試行してください。" });
     } finally {

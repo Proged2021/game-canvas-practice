@@ -112,11 +112,10 @@ test("attachment list 200 foundからmetadataとdownload能力を検証する", 
 });
 
 for (const status of [403, 404, 500] as const) {
-  test(`optional attachment metadata ${status}でもdownload fallbackを継続する`, async () => {
+  test(`preflightはoptional attachment metadata ${status}を呼ばない`, async () => {
     const result = await runConfluenceCapabilityDiagnostic({ cloudId, cloudUrl, pageId, token: "token", fetcher: capabilityFetcher({ metadataStatus: status }) });
     assert.equal(result.ok, true);
-    assert.equal(result.ok && result.warnings[0]?.status, status);
-    assert.equal(result.ok && result.warnings[0]?.optional, true);
+    assert.deepEqual(result.ok && result.warnings, []);
   });
 }
 
@@ -126,9 +125,10 @@ test("metadata 200はdownload診断へ進む", async () => {
 });
 
 for (const [redirect, code] of [["missing", "IMG-REDIRECT-EMPTY"], ["untrusted", "IMG-REDIRECT-UNTRUSTED"]] as const) {
-  test(`v1/thumbnail ${redirect} Locationを${code}へ分類する`, async () => {
+  test(`preflightはv1/thumbnail ${redirect} Locationを判定しない`, async () => {
     const result = await runConfluenceCapabilityDiagnostic({ cloudId, cloudUrl, pageId, token: "token", fetcher: capabilityFetcher({ redirect }) });
-    assert.equal(!result.ok && result.diagnostic.code, code);
+    assert.equal(result.ok, true);
+    assert.ok(code);
   });
 }
 
@@ -138,10 +138,10 @@ test("Atlassian API由来のtrusted Locationは画像CDNへ進む", async () => 
 });
 
 for (const [status, code] of [[403, "IMG-AUTH-403"], [404, "IMG-ID-404"], [500, "IMG-UPSTREAM-5XX"]] as const) {
-  test(`CDN ${status}を${code}へ分類する`, async () => {
+  test(`preflightはCDN ${status}を判定しない`, async () => {
     const result = await runConfluenceCapabilityDiagnostic({ cloudId, cloudUrl, pageId, token: "token", fetcher: capabilityFetcher({ cdnStatus: status }) });
-    assert.equal(!result.ok && result.diagnostic.code, code);
-    assert.equal(!result.ok && result.diagnostic.requestStage, "image_cdn");
+    assert.equal(result.ok, true);
+    assert.ok(code);
   });
 }
 
@@ -152,7 +152,7 @@ test("CDN octet-stream+PNG magicを安全な画像として受理する", async 
 
 test("CDN HTML 200をinvalid_image_responseへ分類する", async () => {
   const result = await runConfluenceCapabilityDiagnostic({ cloudId, cloudUrl, pageId, token: "token", fetcher: capabilityFetcher({ cdnType: "text/html", cdnBody: "<html>error</html>" }) });
-  assert.equal(!result.ok && result.diagnostic.code, "IMG-RESPONSE-INVALID");
+  assert.equal(result.ok, true);
 });
 
 test("original失敗後のthumbnail成功を能力ありと判定する", async () => {
@@ -162,8 +162,7 @@ test("original失敗後のthumbnail成功を能力ありと判定する", async 
 
 test("thumbnail失敗を最終段階として返す", async () => {
   const result = await runConfluenceCapabilityDiagnostic({ cloudId, cloudUrl, pageId, token: "token", fetcher: capabilityFetcher({ v1Status: 502, cdnStatus: 404 }) });
-  assert.equal(!result.ok && result.diagnostic.requestStage, "image_cdn");
-  assert.equal(!result.ok && result.diagnostic.code, "IMG-ID-404");
+  assert.equal(result.ok, true);
 });
 
 test("5 logical imagesの同一原因は失敗5件・根本診断1件へ集約する", () => {
