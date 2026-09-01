@@ -192,6 +192,48 @@ export const sceneConfluenceAssetChunks = sqliteTable(
   (table) => [primaryKey({ columns: [table.assetKey, table.chunkIndex] })],
 );
 
+export const manualImageUploadSessions = sqliteTable(
+  "manual_image_upload_sessions",
+  {
+    uploadId: text("upload_id").primaryKey(),
+    assetKey: text("asset_key").notNull().unique(),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id").notNull().references(() => scenes.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    slotKey: text("slot_key").notNull(),
+    extension: text("extension").notNull(),
+    declaredMime: text("declared_mime").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    chunkCount: integer("chunk_count").notNull(),
+    createdByAccountKey: text("created_by_account_key").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("manual_image_upload_sessions_owner_idx").on(table.workspaceId, table.sceneId, table.createdByAccountKey),
+    uniqueIndex("manual_image_upload_sessions_retry_idx").on(
+      table.workspaceId,
+      table.sceneId,
+      table.slotKey,
+      table.sha256,
+      table.createdByAccountKey,
+    ),
+  ],
+);
+
+export const manualImageUploadChunks = sqliteTable(
+  "manual_image_upload_chunks",
+  {
+    uploadId: text("upload_id").notNull().references(() => manualImageUploadSessions.uploadId, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    data: blob("data", { mode: "buffer" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.uploadId, table.chunkIndex] })],
+);
+
 export const sceneConfluenceAttachments = sqliteTable(
   "scene_confluence_attachments",
   {

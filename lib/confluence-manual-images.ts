@@ -17,7 +17,7 @@ function decodeOnce(value: string) {
 }
 
 export function normalizeManualFilename(value: string) {
-  const decoded = decodeOnce(value.trim()).replaceAll("\\", "/");
+  const decoded = decodeOnce(value.trim()).replace(/[?#].*$/, "").replaceAll("\\", "/");
   const basename = decoded.split("/").filter(Boolean).at(-1) ?? "";
   return basename.normalize("NFKC").toLocaleLowerCase("en-US");
 }

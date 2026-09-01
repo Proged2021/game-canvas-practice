@@ -44,6 +44,13 @@ export async function deleteWorkspaceGraph(
 
   const results = await database.batch([
     byWorkspace(
+      `DELETE FROM manual_image_upload_chunks
+       WHERE upload_id IN (
+         SELECT upload_id FROM manual_image_upload_sessions WHERE workspace_id=?1
+       )`,
+    ),
+    byWorkspace("DELETE FROM manual_image_upload_sessions WHERE workspace_id=?1"),
+    byWorkspace(
       `DELETE FROM scene_confluence_asset_chunks
        WHERE asset_key IN (
          SELECT asset_key FROM scene_confluence_assets WHERE workspace_id=?1

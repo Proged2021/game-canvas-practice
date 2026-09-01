@@ -263,6 +263,10 @@ export function WorkspaceClient({
     () => data?.scenes.find((s) => s.id === selectedId) ?? data?.scenes[0],
     [data, selectedId],
   );
+  const selectedSceneIdRef = useRef(active?.id ?? "");
+  useEffect(() => {
+    selectedSceneIdRef.current = active?.id ?? "";
+  }, [active?.id]);
   const editable = data?.workspace.role !== "viewer";
   const load = useCallback(async () => {
     try {
@@ -812,61 +816,115 @@ export function WorkspaceClient({
   }
   async function uploadManualImages(assignments: Array<{ slot: ManualImageSlot; file: File }>) {
     if (!active || manualUpload.active || !assignments.length) return;
+    const uploadSceneId = active.id;
     const total = assignments.length;
     setManualUpload({ active: true, completed: 0, total, message: `${total}件中0件を保存しています…` });
     setManualSlots((previous) => previous.map((slot) =>
       assignments.some((item) => item.slot.slotKey === slot.slotKey)
         ? { ...slot, status: "uploading", error: undefined }
         : slot));
-    const form = new FormData();
-    const metadata = assignments.map((item, index) => {
-      const field = `image_${index}`;
-      form.append(field, item.file, item.file.name);
-      return { field, slotKey: item.slot.slotKey };
-    });
-    form.append("assignments", JSON.stringify(metadata));
-    try {
-      const result = await new Promise<{
-        message?: string;
-        error?: string;
-        runtimeVersion?: string;
-        saved?: number;
-        totalSaved?: number;
-        slots?: ManualImageSlot[];
-        source?: { synced_html?: string };
-      }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(active.id)}/images`);
-        xhr.setRequestHeader("x-plotline-csrf", "manual-confluence-image");
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return;
-          const completed = Math.min(total - 1, Math.floor((event.loaded / event.total) * total));
-          setManualUpload({ active: true, completed, total, message: `${total}件中${completed}件を送信しました…` });
-        };
-        xhr.onerror = () => reject(new Error("画像アップロードAPIと通信できませんでした。"));
-        xhr.onload = () => {
-          let body: { error?: string } = {};
-          try { body = JSON.parse(xhr.responseText); } catch { /* safe generic error below */ }
-          if (xhr.status < 200 || xhr.status >= 300)
-            return reject(new Error(body.error ?? "画像を保存できませんでした。"));
-          resolve(body);
-        };
-        xhr.send(form);
+    type UploadResult = {
+      error?: string; code?: string; runtimeVersion?: string; uploadId?: string;
+      chunkBytes?: number; chunkCount?: number; alreadySaved?: boolean; saved?: number;
+      slots?: ManualImageSlot[]; source?: { synced_html?: string };
+    };
+    const endpoint = `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(uploadSceneId)}/images/uploads`;
+    const hash = async (bytes: ArrayBuffer) => Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const requestJson = async (url: string, method: string, body: unknown): Promise<UploadResult> => {
+      const response = await fetch(url, {
+        method,
+        headers: { "content-type": "application/json", "x-plotline-csrf": "manual-confluence-image" },
+        body: JSON.stringify(body),
       });
-      setManualSlots(result.slots ?? []);
-      if (result.source?.synced_html)
-        setSceneSource((previous) => previous ? { ...previous, synced_html: result.source!.synced_html! } : previous);
-      const saved = result.saved ?? total;
-      const message = `画像${saved}件を内部保存しました。実行版:${result.runtimeVersion ?? "34"}`;
-      setManualUpload({ active: false, completed: total, total, message });
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "画像を保存できませんでした。";
-      setManualSlots((previous) => previous.map((slot) =>
-        assignments.some((item) => item.slot.slotKey === slot.slotKey)
-          ? { ...slot, status: "error", error: message }
-          : slot));
-      setManualUpload({ active: false, completed: 0, total, message });
+      const result = await response.json().catch(() => ({})) as UploadResult;
+      if (!response.ok) throw new Error(`${result.error ?? "画像を保存できませんでした。"}${result.code ? `（${result.code}）` : ""}`);
+      return result;
+    };
+    let completed = 0;
+    let savedCount = 0;
+    let lastRuntime = "35";
+    const failures: string[] = [];
+    for (const { slot, file } of assignments) {
+      let uploadId = "";
+      try {
+        if (!file.size) throw new Error("空の画像は保存できません。別の画像を選んでください。（IMG-SIZE）");
+        if (file.size > 10 * 1024 * 1024) throw new Error("画像は1枚10MiB以下にしてください。（IMG-SIZE）");
+        const accepted: Record<string, string[]> = {
+          "image/png": ["png"], "image/jpeg": ["jpg", "jpeg"], "image/gif": ["gif"], "image/webp": ["webp"],
+        };
+        const extension = normalizedUploadName(file.name).split(".").at(-1) ?? "";
+        if (!accepted[file.type]?.includes(extension))
+          throw new Error("PNG、JPEG、GIF、WebPの画像を選んでください。（IMG-TYPE）");
+        const fullBytes = await file.arrayBuffer();
+        const fileSha256 = await hash(fullBytes);
+        const started = await requestJson(endpoint, "POST", {
+          slotKey: slot.slotKey,
+          byteSize: file.size,
+          mime: file.type,
+          extension,
+          sha256: fileSha256,
+        });
+        lastRuntime = started.runtimeVersion ?? lastRuntime;
+        if (started.alreadySaved) {
+          if (selectedSceneIdRef.current === uploadSceneId) {
+            setManualSlots(started.slots ?? []);
+            if (started.source?.synced_html)
+              setSceneSource((previous) => previous ? { ...previous, synced_html: started.source!.synced_html! } : previous);
+          }
+          savedCount += 1;
+          completed += 1;
+          continue;
+        }
+        uploadId = started.uploadId ?? "";
+        const chunkBytes = started.chunkBytes ?? 160 * 1024;
+        const chunkCount = started.chunkCount ?? Math.ceil(file.size / chunkBytes);
+        if (!uploadId || chunkBytes > 256 * 1024 || chunkBytes < 32 * 1024)
+          throw new Error("画像保存の準備情報が正しくありません。（IMG-STORAGE）");
+        for (let index = 0; index < chunkCount; index += 1) {
+          const chunk = fullBytes.slice(index * chunkBytes, Math.min(fullBytes.byteLength, (index + 1) * chunkBytes));
+          const response = await fetch(`${endpoint}/${encodeURIComponent(uploadId)}/chunks/${index}`, {
+            method: "PUT",
+            headers: {
+              "content-type": "application/octet-stream",
+              "x-plotline-csrf": "manual-confluence-image",
+              "x-image-chunk-sha256": await hash(chunk),
+            },
+            body: chunk,
+          });
+          const result = await response.json().catch(() => ({})) as UploadResult;
+          if (!response.ok) throw new Error(`${result.error ?? "画像の分割保存に失敗しました。"}${result.code ? `（${result.code}）` : ""}`);
+          const fraction = (index + 1) / chunkCount;
+          setManualUpload({ active: true, completed, total, message: `${total}件中${completed}件（次の画像 ${Math.round(fraction * 100)}%）` });
+        }
+        const result = await requestJson(`${endpoint}/${encodeURIComponent(uploadId)}/complete`, "POST", {});
+        lastRuntime = result.runtimeVersion ?? lastRuntime;
+        if (selectedSceneIdRef.current === uploadSceneId) {
+          setManualSlots(result.slots ?? []);
+          if (result.source?.synced_html)
+            setSceneSource((previous) => previous ? { ...previous, synced_html: result.source!.synced_html! } : previous);
+        }
+        savedCount += 1;
+        completed += 1;
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : "画像を保存できませんでした。（IMG-STORAGE）";
+        failures.push(message);
+        if (selectedSceneIdRef.current === uploadSceneId)
+          setManualSlots((previous) => previous.map((item) => item.slotKey === slot.slotKey
+            ? { ...item, status: "error", error: message }
+            : item));
+        if (uploadId)
+          void requestJson(`${endpoint}/${encodeURIComponent(uploadId)}`, "DELETE", {}).catch(() => undefined);
+        completed += 1;
+      }
+      setManualUpload({ active: true, completed, total, message: `${total}件中${completed}件を処理しました…` });
     }
+    const message = failures.length
+      ? `${savedCount}件を追加し、${failures.length}件は保存できませんでした。${failures[0]}`
+      : `画像${savedCount}件を追加しました。実行版:${lastRuntime}`;
+    setManualUpload({ active: false, completed: savedCount, total, message });
   }
   function assignSelectedFiles(files: File[]) {
     const available = manualSlots.filter((slot) => slot.status !== "saved");
@@ -880,6 +938,7 @@ export function WorkspaceClient({
       used.add(slot.slotKey);
       assignments.push({ slot, file });
     }
+    const unmatched = files.slice(0, 30).filter((file) => !assignments.some((item) => item.file === file));
     if (!assignments.length) {
       setManualUpload({
         active: false, completed: 0, total: files.length,
@@ -887,6 +946,13 @@ export function WorkspaceClient({
       });
       return;
     }
+    if (unmatched.length)
+      setManualUpload({
+        active: false,
+        completed: 0,
+        total: files.length,
+        message: `一致しない画像が${unmatched.length}件あります。対応する欠損画像カードから個別に選んでください。`,
+      });
     void uploadManualImages(assignments);
   }
   async function pasteFromClipboard(slot: ManualImageSlot) {
@@ -1107,7 +1173,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:34</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:35</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);
