@@ -170,6 +170,11 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       });
 
     const pageId = parsed.pageId;
+    const localEdit = await db()
+      .prepare(`SELECT html,revision,updated_at FROM scene_confluence_local_edits
+        WHERE workspace_id=?1 AND scene_id=?2 AND page_id=?3`)
+      .bind(auth.membership.workspace_id, sceneId, pageId)
+      .first<{ html: string; revision: number; updated_at: string }>();
     let page: {
       id: string;
       title: string;
@@ -342,7 +347,10 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       database
         .prepare("UPDATE confluence_connections SET attachment_scope_granted=1,last_error=NULL WHERE workspace_id=?1")
         .bind(auth.membership.workspace_id),
-      ...(generation ? [database
+      database
+        .prepare("DELETE FROM scene_confluence_local_edits WHERE workspace_id=?1 AND scene_id=?2 AND page_id<>?3")
+        .bind(auth.membership.workspace_id, sceneId, pageId),
+      ...(generation && !localEdit ? [database
         .prepare("DELETE FROM scene_confluence_assets WHERE workspace_id=?1 AND scene_id=?2 AND provenance='automatic' AND generation<>?3")
         .bind(auth.membership.workspace_id, sceneId, generation)] : []),
     ];
@@ -362,6 +370,11 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       last_synced_at: syncedAt,
       last_checked_at: syncedAt,
       last_error: null,
+      local_html: localEdit?.html ?? null,
+      local_revision: localEdit?.revision ?? 0,
+      local_updated_at: localEdit?.updated_at ?? null,
+      has_local_edit: Boolean(localEdit),
+      display_html: localEdit?.html ?? rendered.html,
     };
     const warnings = [
       ...(diagnosticWarnings.length

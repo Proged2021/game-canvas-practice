@@ -85,13 +85,13 @@ test("サーバーも確認名の完全一致を再検証する", async () => {
   assert.match(route, /status: 400/);
 });
 
-test("D1 transactional batchは実スキーマ18テーブルの対象データを依存順で削除する", async () => {
+test("D1 transactional batchは実スキーマ19テーブルの対象データを依存順で削除する", async () => {
   const [schema, deletion] = await Promise.all([
     read("db/schema.ts"),
     read("lib/workspace-deletion.ts"),
   ]);
   const tables = [...schema.matchAll(/sqliteTable\(\s*"([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(new Set(tables).size, 18);
+  assert.equal(new Set(tables).size, 19);
   for (const table of new Set(tables)) {
     assert.match(deletion, new RegExp(`DELETE FROM ${table}`), `missing ${table}`);
   }
@@ -161,13 +161,13 @@ test("モバイル・長名・キーボードfocus表示を維持する", async 
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*workspace-delete-dialog/);
 });
 
-test("runtimeVersion 35をno-storeで公開しversion33以前の主要機能を保持する", async () => {
+test("runtimeVersion 36をno-storeで公開しversion33以前の主要機能を保持する", async () => {
   const [version, runtime, dashboard, workspace, markdown] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
     read("components/dashboard-client.tsx"), read("components/workspace-client.tsx"),
     read("components/markdown-view.tsx"),
   ]);
-  assert.match(version, /"35"/);
+  assert.match(version, /"36"/);
   assert.match(runtime, /cache-control.*no-store/s);
   assert.match(dashboard, /copy|workspace-delete-button/i);
   assert.match(workspace, /別の方法で画像を追加/);

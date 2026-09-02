@@ -59,6 +59,7 @@ export async function deleteWorkspaceGraph(
     byWorkspace("DELETE FROM scene_confluence_manual_assets WHERE workspace_id=?1"),
     byWorkspace("DELETE FROM scene_confluence_assets WHERE workspace_id=?1"),
     byWorkspace("DELETE FROM scene_confluence_attachments WHERE workspace_id=?1"),
+    byWorkspace("DELETE FROM scene_confluence_local_edits WHERE workspace_id=?1"),
     byWorkspace("DELETE FROM scene_confluence_sources WHERE workspace_id=?1"),
     byWorkspace("DELETE FROM confluence_attachments WHERE workspace_id=?1"),
     byWorkspace("DELETE FROM workspace_join_requests WHERE workspace_id=?1"),

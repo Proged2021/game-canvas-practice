@@ -141,6 +141,20 @@ export const sceneConfluenceSources = sqliteTable(
   ],
 );
 
+export const sceneConfluenceLocalEdits = sqliteTable(
+  "scene_confluence_local_edits",
+  {
+    sceneId: text("scene_id").primaryKey().references(() => scenes.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    pageId: text("page_id").notNull(),
+    html: text("html").notNull(),
+    revision: integer("revision").notNull().default(1),
+    updatedByAccountKey: text("updated_by_account_key").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("scene_confluence_local_edits_workspace_idx").on(table.workspaceId, table.sceneId)],
+);
+
 export const sceneConfluenceAssets = sqliteTable(
   "scene_confluence_assets",
   {
