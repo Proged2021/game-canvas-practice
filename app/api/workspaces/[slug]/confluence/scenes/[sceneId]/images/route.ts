@@ -1,5 +1,6 @@
 import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { buildManualUploadResult } from "@/lib/manual-image-upload";
 import { loadManualSceneAssets, stageManualSceneAssets } from "@/lib/confluence-assets";
 import {
   extractConfluenceImageSlots,
@@ -115,19 +116,16 @@ export async function POST(
   } catch {
     return json({ error: "画像を保存できませんでした。以前の画像は保持されています。" }, { status: 500 });
   }
-  const saved = await loadManualSceneAssets(auth.membership.workspace_id, sceneId, source.page_id);
-  const savedMap = new Map(saved.map((item) => [item.slot_key, item.asset_key]));
+  const result = await buildManualUploadResult(
+    auth.membership.workspace_id,
+    sceneId,
+    source.page_id,
+    updatedHtml,
+    assets.length,
+  );
   return json({
+    ...result,
     message: `画像${assets.length}件を内部保存しました。`,
     runtimeVersion: PLOTLINE_RUNTIME_VERSION,
-    saved: assets.length,
-    totalSaved: saved.length,
-    source: { synced_html: updatedHtml },
-    slots: slots.map((slot) => ({
-      slotKey: slot.slotKey,
-      label: slot.label,
-      status: savedMap.has(slot.slotKey) ? "saved" : "missing",
-      src: savedMap.has(slot.slotKey) ? `${proxyPrefix}/${savedMap.get(slot.slotKey)}` : null,
-    })),
   });
 }

@@ -174,15 +174,15 @@ test("additive staging migrationとworkspace削除cleanupを含む", async () =>
   assert.match(deletion, /DELETE FROM manual_image_upload_sessions WHERE workspace_id=\?1/);
 });
 
-test("runtime35・no-storeとversion34以前の主要UIを保持する", async () => {
+test("runtime40・no-storeとversion34以前の主要UIを保持する", async () => {
   const [version, runtime, workspace, dashboard, markdown] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
     read("components/workspace-client.tsx"), read("components/dashboard-client.tsx"),
     read("components/markdown-view.tsx"),
   ]);
-  assert.match(version, /"39"/);
+  assert.match(version, /"40"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(workspace, /実行版:39/);
+  assert.match(workspace, /実行版:40/);
   assert.match(workspace, /restoreScene|自分の表示名|invite/i);
   assert.match(dashboard, /workspace-delete-button/);
   assert.match(markdown, /remarkPlotlineBreaks|remarkPlotlineCallouts/);

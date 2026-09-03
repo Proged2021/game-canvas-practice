@@ -122,13 +122,13 @@ test("additive migrationは既存HTMLと画像・本文を変更せずMarkdown�
   assert.doesNotMatch(migration, /DROP|DELETE|UPDATE/);
 });
 
-test("runtimeVersion 39をno-storeで公開しversion35画像全経路を保持する", async () => {
+test("runtimeVersion 40をno-storeで公開しversion35画像全経路を保持する", async () => {
   const [version, runtime, client] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
-  assert.match(version, /"39"/);
+  assert.match(version, /"40"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:39/);
+  assert.match(client, /実行版:40/);
   for (const entry of ["assignSelectedFiles", "pasteFromClipboard", "handleManualPaste", "onDrop"])
     assert.match(client, new RegExp(entry));
 });

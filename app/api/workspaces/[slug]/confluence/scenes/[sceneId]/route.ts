@@ -2,6 +2,7 @@ import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { extractConfluenceImageSlots } from "@/lib/confluence-manual-images";
 import { loadManualSceneAssets } from "@/lib/confluence-assets";
+import { rewriteLocalHtmlImageSources, rewriteLocalMarkdownImageSources } from "@/lib/local-image-links";
 
 async function sceneInWorkspace(sceneId: string, workspaceId: string) {
   return db()
@@ -41,11 +42,19 @@ export async function GET(
     status: mapping.has(slot.slotKey) ? "saved" : "missing",
     src: mapping.has(slot.slotKey) ? `${proxyPrefix}/${mapping.get(slot.slotKey)}` : null,
   }));
+  const localMarkdown = typed.local_markdown == null
+    ? null
+    : rewriteLocalMarkdownImageSources(typed.local_markdown, slots);
+  const localHtml = typed.local_html
+    ? rewriteLocalHtmlImageSources(typed.local_html, slots)
+    : typed.local_html;
   return Response.json({
     source: {
       ...source,
-      display_html: typed.local_html ?? typed.synced_html,
-      has_local_edit: typed.local_html != null,
+      local_html: localHtml,
+      local_markdown: localMarkdown,
+      display_html: localHtml || typed.synced_html,
+      has_local_edit: typed.local_html != null || typed.local_markdown != null,
     },
     slots,
   }, { headers: { "cache-control": "no-store" } });

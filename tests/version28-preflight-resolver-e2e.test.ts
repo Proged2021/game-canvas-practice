@@ -112,7 +112,7 @@ test("公開runtime markerは34だけをno-storeで返す", async () => {
     read("app/api/runtime/route.ts"),
     read("lib/runtime-version.ts"),
   ]);
-  assert.match(version, /"39"/);
+  assert.match(version, /"40"/);
   assert.match(route, /runtimeVersion/);
   assert.match(route, /cache-control.*no-store/s);
   assert.doesNotMatch(route, /token|email|workspace|scene|attachment/i);

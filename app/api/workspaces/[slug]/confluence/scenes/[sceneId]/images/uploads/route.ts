@@ -21,7 +21,7 @@ export async function POST(
   if (!validSceneId(sceneId))
     return Response.json({ error: "場面が見つかりません。", code: "IMG-SLOT" }, { status: 404, headers: { "cache-control": "no-store" } });
   try {
-    const body = await request.json();
+    const body = await request.json() as import("@/lib/manual-image-upload").StartManualUploadInput;
     const result = await startManualImageUpload({
       workspaceId: auth.membership.workspace_id,
       sceneId,

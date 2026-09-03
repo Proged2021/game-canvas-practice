@@ -8,6 +8,7 @@ import {
   validateManualImage,
 } from "./confluence-manual-images.ts";
 import { MAX_CONFLUENCE_IMAGE_BYTES, SAFE_IMAGE_MEDIA_TYPES } from "./confluence-safe.ts";
+import { rewriteLocalHtmlImageSources, rewriteLocalMarkdownImageSources } from "./local-image-links.ts";
 
 // Kept below the Sites request-body ceiling (production rejected ~1.2MiB before the Worker).
 export const MANUAL_IMAGE_UPLOAD_CHUNK_BYTES = 160 * 1024;
@@ -302,15 +303,32 @@ export async function buildManualUploadResult(workspaceId: string, sceneId: stri
   const current = await loadManualSceneAssets(workspaceId, sceneId, pageId);
   const savedMap = new Map(current.map((item) => [item.slot_key, item.asset_key]));
   const proxyPrefix = `/api/workspaces/${encodeURIComponent(workspaceId)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
+  const slotResults = slots.map((slot) => ({
+    slotKey: slot.slotKey,
+    label: slot.label,
+    status: savedMap.has(slot.slotKey) ? "saved" : "missing",
+    src: savedMap.has(slot.slotKey) ? `${proxyPrefix}/${savedMap.get(slot.slotKey)}` : null,
+  }));
+  const localEdit = await db().prepare(`SELECT html,markdown FROM scene_confluence_local_edits
+    WHERE workspace_id=?1 AND scene_id=?2 AND page_id=?3`)
+    .bind(workspaceId, sceneId, pageId)
+    .first<{ html: string | null; markdown: string | null }>();
+  const localSlots = slotResults.map((slot) => ({ slotKey: slot.slotKey, label: slot.label, src: slot.src }));
+  const localMarkdown = localEdit?.markdown == null
+    ? null
+    : rewriteLocalMarkdownImageSources(localEdit.markdown, localSlots);
+  const localHtml = localEdit?.html
+    ? rewriteLocalHtmlImageSources(localEdit.html, localSlots)
+    : localEdit?.html ?? null;
   return {
     saved,
     totalSaved: current.length,
-    source: { synced_html: syncedHtml },
-    slots: slots.map((slot) => ({
-      slotKey: slot.slotKey,
-      label: slot.label,
-      status: savedMap.has(slot.slotKey) ? "saved" : "missing",
-      src: savedMap.has(slot.slotKey) ? `${proxyPrefix}/${savedMap.get(slot.slotKey)}` : null,
-    })),
+    source: {
+      synced_html: syncedHtml,
+      local_html: localHtml,
+      local_markdown: localMarkdown,
+      display_html: localHtml || syncedHtml,
+    },
+    slots: slotResults,
   };
 }

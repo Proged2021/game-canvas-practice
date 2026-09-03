@@ -21,8 +21,9 @@ test("場面ごとのローカル編集を同期本文と分離するadditive mi
 test("GETは同じworkspace・scene・pageのローカル本文だけを表示へ合成する", async () => {
   const route = await read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/route.ts");
   assert.match(route, /local\.scene_id=src\.scene_id AND local\.workspace_id=src\.workspace_id AND local\.page_id=src\.page_id/);
-  assert.match(route, /display_html: typed\.local_html \?\? typed\.synced_html/);
-  assert.match(route, /has_local_edit: typed\.local_html != null/);
+  assert.match(route, /display_html: localHtml \|\| typed\.synced_html/);
+  assert.match(route, /has_local_edit: typed\.local_html != null \|\| typed\.local_markdown != null/);
+  assert.match(route, /local_markdown: localMarkdown/);
   assert.match(route, /extractConfluenceImageSlots\(typed\.synced_html\)/);
   assert.match(route, /cache-control": "no-store/);
 });
@@ -111,19 +112,21 @@ test("場面切替はローカル編集状態を破棄し再読込ではD1表示
   assert.match(client, /sceneSource\?\.display_html[\s\S]*sceneSource\?\.local_html[\s\S]*sceneSource\?\.synced_html/);
 });
 
-test("手動画像更新は同期本文を更新しつつローカル表示を上書きしない", async () => {
+test("手動画像更新は同期本文を更新しつつローカル本文の画像リンクを再生成する", async () => {
   const client = await read("components/workspace-client.tsx");
-  assert.equal((client.match(/display_html: previous\.has_local_edit \? previous\.display_html/g) ?? []).length, 2);
-  assert.match(client, /synced_html: (started|result)\.source!/);
+  assert.match(client, /function applyManualUploadResult/);
+  assert.match(client, /rewriteLocalMarkdownImageSources\(markdownBase, slots\)/);
+  assert.match(client, /source\.local_html \? source\.local_html : previous\.display_html/);
+  assert.match(client, /synced_html/);
 });
 
-test("workspace削除はローカル編集も含みruntimeVersion 39を公開する", async () => {
+test("workspace削除はローカル編集も含みruntimeVersion 40を公開する", async () => {
   const [deletion, version, runtime, client] = await Promise.all([
     read("lib/workspace-deletion.ts"), read("lib/runtime-version.ts"),
     read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
   assert.match(deletion, /DELETE FROM scene_confluence_local_edits WHERE workspace_id=\?1/);
-  assert.match(version, /"39"/);
+  assert.match(version, /"40"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:39/);
+  assert.match(client, /実行版:40/);
 });

@@ -77,6 +77,7 @@ import {
 import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
 import { chooseSceneAfterDeletion, stableSceneOrder } from "@/lib/scene-order";
 import { copyTextWithFallback } from "@/lib/clipboard";
+import { rewriteLocalMarkdownImageSources } from "@/lib/local-image-links";
 
 type Scene = {
   id: string;
@@ -146,6 +147,23 @@ type ManualImageSlot = {
   status: "saved" | "missing" | "error" | "uploading";
   src?: string | null;
   error?: string;
+};
+type ManualImageUploadResult = {
+  error?: string;
+  code?: string;
+  runtimeVersion?: string;
+  uploadId?: string;
+  chunkBytes?: number;
+  chunkCount?: number;
+  alreadySaved?: boolean;
+  saved?: number;
+  slots?: ManualImageSlot[];
+  source?: {
+    synced_html?: string;
+    local_html?: string | null;
+    local_markdown?: string | null;
+    display_html?: string;
+  };
 };
 type DeletedScene = {
   id: string;
@@ -987,6 +1005,51 @@ export function WorkspaceClient({
     return (decoded.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "")
       .normalize("NFKC").toLocaleLowerCase("en-US");
   }
+  function applyManualUploadResult(sceneId: string, result: ManualImageUploadResult) {
+    if (selectedSceneIdRef.current !== sceneId) return;
+    const slots = result.slots ?? [];
+    setManualSlots(slots);
+    const source = result.source;
+    if (!source) return;
+
+    const current = sceneSource;
+    const currentHasLocalMarkdown = current?.local_markdown != null;
+    const serverHasLocalMarkdown = source.local_markdown != null;
+    const hasLocalMarkdown = currentHasLocalMarkdown || serverHasLocalMarkdown;
+    const currentDraft = localStoryDrafts.current.get(sceneId)
+      ?? current?.local_markdown
+      ?? "";
+    const markdownBase = localStoryDirty
+      ? currentDraft
+      : source.local_markdown ?? currentDraft;
+    const localMarkdown = hasLocalMarkdown
+      ? rewriteLocalMarkdownImageSources(markdownBase, slots)
+      : null;
+    if (localMarkdown != null) {
+      localStoryDrafts.current.set(sceneId, localMarkdown);
+      setLocalStoryDraft(localMarkdown);
+      if (localStoryDirty) {
+        scheduleLocalStorySave(sceneId, localMarkdown);
+      } else {
+        localStorySaved.current.set(sceneId, localMarkdown);
+      }
+    }
+
+    setSceneSource((previous) => previous ? {
+      ...previous,
+      ...source,
+      local_html: source.local_html !== undefined ? source.local_html : previous.local_html,
+      local_markdown: source.local_markdown !== undefined
+        ? (localStoryDirty && currentHasLocalMarkdown ? localMarkdown : localMarkdown ?? null)
+        : localMarkdown ?? previous.local_markdown,
+      display_html: previous.has_local_edit
+        ? source.local_html ? source.local_html : previous.display_html
+        : source.display_html ?? source.synced_html ?? previous.display_html,
+      has_local_edit: source.local_html !== undefined || source.local_markdown !== undefined
+        ? source.local_html != null || source.local_markdown != null
+        : previous.has_local_edit,
+    } : previous);
+  }
   async function uploadManualImages(assignments: Array<{ slot: ManualImageSlot; file: File }>) {
     if (!active || manualUpload.active || !assignments.length) return;
     const uploadSceneId = active.id;
@@ -996,11 +1059,7 @@ export function WorkspaceClient({
       assignments.some((item) => item.slot.slotKey === slot.slotKey)
         ? { ...slot, status: "uploading", error: undefined }
         : slot));
-    type UploadResult = {
-      error?: string; code?: string; runtimeVersion?: string; uploadId?: string;
-      chunkBytes?: number; chunkCount?: number; alreadySaved?: boolean; saved?: number;
-      slots?: ManualImageSlot[]; source?: { synced_html?: string };
-    };
+    type UploadResult = ManualImageUploadResult;
     const endpoint = `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(uploadSceneId)}/images/uploads`;
     const hash = async (bytes: ArrayBuffer) => Array.from(
       new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
@@ -1018,7 +1077,7 @@ export function WorkspaceClient({
     };
     let completed = 0;
     let savedCount = 0;
-    let lastRuntime = "39";
+    let lastRuntime = "40";
     const failures: string[] = [];
     for (const { slot, file } of assignments) {
       let uploadId = "";
@@ -1042,15 +1101,7 @@ export function WorkspaceClient({
         });
         lastRuntime = started.runtimeVersion ?? lastRuntime;
         if (started.alreadySaved) {
-          if (selectedSceneIdRef.current === uploadSceneId) {
-            setManualSlots(started.slots ?? []);
-            if (started.source?.synced_html)
-              setSceneSource((previous) => previous ? {
-                ...previous,
-                synced_html: started.source!.synced_html!,
-                display_html: previous.has_local_edit ? previous.display_html : started.source!.synced_html!,
-              } : previous);
-          }
+          applyManualUploadResult(uploadSceneId, started);
           savedCount += 1;
           completed += 1;
           continue;
@@ -1078,15 +1129,7 @@ export function WorkspaceClient({
         }
         const result = await requestJson(`${endpoint}/${encodeURIComponent(uploadId)}/complete`, "POST", {});
         lastRuntime = result.runtimeVersion ?? lastRuntime;
-        if (selectedSceneIdRef.current === uploadSceneId) {
-          setManualSlots(result.slots ?? []);
-          if (result.source?.synced_html)
-            setSceneSource((previous) => previous ? {
-              ...previous,
-              synced_html: result.source!.synced_html!,
-              display_html: previous.has_local_edit ? previous.display_html : result.source!.synced_html!,
-            } : previous);
-        }
+        applyManualUploadResult(uploadSceneId, result);
         savedCount += 1;
         completed += 1;
       } catch (reason) {
@@ -1555,7 +1598,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:39</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:40</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);
