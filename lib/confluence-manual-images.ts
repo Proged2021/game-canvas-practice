@@ -39,15 +39,15 @@ async function stableSlotKey(pageId: string, filename: string, occurrence: numbe
   return Array.from(digest.slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function markdownImageSources(markdown: string) {
-  const sources: string[] = [];
-  for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g))
-    sources.push(match[1] ?? match[2] ?? "");
+function markdownImageReferences(markdown: string) {
+  const references: Array<{ alt: string; source: string }> = [];
+  for (const match of markdown.matchAll(/!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g))
+    references.push({ alt: match[1] ?? "", source: match[2] ?? match[3] ?? "" });
   for (const match of markdown.matchAll(/<img\b[^>]*>/gi)) {
     const source = attribute(match[0], "src");
-    if (source) sources.push(source);
+    if (source) references.push({ alt: attribute(match[0], "alt") || attribute(match[0], "title"), source });
   }
-  return sources;
+  return references;
 }
 
 function isLocalImageReference(source: string) {
@@ -62,17 +62,35 @@ export async function buildAvailableImageSlots(input: {
   localMarkdown?: string | null;
   sceneMarkdown?: string | null;
 }) {
-  const slots = extractConfluenceImageSlots(input.syncedHtml);
-  const known = new Set(slots.map((slot) => normalizeManualFilename(slot.label)).filter(Boolean));
-  for (const source of markdownImageSources(`${input.localMarkdown ?? ""}\n${input.sceneMarkdown ?? ""}`)) {
-    if (!isLocalImageReference(source)) continue;
-    const normalized = normalizeManualFilename(source);
-    if (!normalized || known.has(normalized)) continue;
-    known.add(normalized);
-    slots.push({
-      slotKey: await stableSlotKey(`${input.pageId}:local-markdown`, normalized, 1),
-      label: safeLabel(source, slots.length),
-    });
+  const base = extractConfluenceImageSlots(input.syncedHtml);
+  if (input.localMarkdown == null) return base;
+
+  const slots: Array<{ slotKey: string; label: string }> = [];
+  const used = new Set<string>();
+  const counts = new Map<string, number>();
+  const references = [
+    ...markdownImageReferences(input.localMarkdown),
+    ...markdownImageReferences(input.sceneMarkdown ?? ""),
+  ];
+  for (const reference of references) {
+    const sourceName = isLocalImageReference(reference.source) ? normalizeManualFilename(reference.source) : "";
+    const altName = normalizeManualFilename(reference.alt);
+    const normalized = sourceName || altName;
+    if (!normalized) continue;
+    const existing = base.find((slot) => !used.has(slot.slotKey)
+      && [sourceName, altName].filter(Boolean).includes(normalizeManualFilename(slot.label)));
+    if (existing) {
+      used.add(existing.slotKey);
+      slots.push(existing);
+    } else {
+      if (!sourceName) continue;
+      const occurrence = (counts.get(normalized) ?? 0) + 1;
+      counts.set(normalized, occurrence);
+      slots.push({
+        slotKey: await stableSlotKey(`${input.pageId}:local-markdown`, normalized, occurrence),
+        label: safeLabel(reference.source, slots.length),
+      });
+    }
     if (slots.length >= MAX_MANUAL_IMAGES_PER_SCENE) break;
   }
   return slots;

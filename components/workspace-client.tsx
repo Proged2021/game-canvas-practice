@@ -78,7 +78,14 @@ import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
 import { chooseSceneAfterDeletion, stableSceneOrder } from "@/lib/scene-order";
 import { copyTextWithFallback } from "@/lib/clipboard";
 import { resolveStoredImageSources } from "@/lib/confluence-manual-images";
-import { rewriteLocalMarkdownImageSources } from "@/lib/local-image-links";
+import {
+  insertLocalMarkdownImage,
+  linkLocalMarkdownImages,
+  normalizeLocalImageFilename,
+  removeLocalMarkdownImage,
+  rewriteLocalMarkdownImageSources,
+  type LocalMarkdownImage,
+} from "@/lib/local-image-links";
 
 type Scene = {
   id: string;
@@ -279,6 +286,7 @@ export function WorkspaceClient({
   const [localStoryResetOpen, setLocalStoryResetOpen] = useState(false);
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
   const localStoryEditorRef = useRef<HTMLTextAreaElement>(null);
+  const localImageAddInputRef = useRef<HTMLInputElement>(null);
   const [activeEditorPane, setActiveEditorPane] = useState<"left" | "right">("right");
   const localStoryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const localStoryDrafts = useRef(new Map<string, string>());
@@ -1164,9 +1172,7 @@ export function WorkspaceClient({
     setManualUpload({ active: false, completed: savedCount, total, message });
   }
 
-  async function refreshManualImageSlots(sceneId: string) {
-    try {
-      await flushLocalStory(sceneId);
+  async function loadManualImageContext(sceneId: string) {
       const response = await fetch(`/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(sceneId)}`, { cache: "no-store" });
       const result = await response.json().catch(() => ({})) as { source?: SceneConfluenceSource; slots?: ManualImageSlot[]; error?: string };
       if (!response.ok) throw new Error(result.error ?? "画像一覧を更新できませんでした。");
@@ -1174,8 +1180,61 @@ export function WorkspaceClient({
         if (result.source) setSceneSource(result.source);
         setManualSlots(result.slots ?? []);
       }
+      return { source: result.source, slots: result.slots ?? [] };
+  }
+  async function refreshManualImageSlots(sceneId: string) {
+    try {
+      await flushLocalStory(sceneId);
+      await loadManualImageContext(sceneId);
     } catch (reason) {
       setManualUpload({ active: false, completed: 0, total: 0, message: reason instanceof Error ? reason.message : "画像一覧を更新できませんでした。" });
+    }
+  }
+
+  async function addLocalStoryImage(file: File) {
+    if (!active || manualUpload.active) return;
+    const extension = normalizedUploadName(file.name).split(".").at(-1) ?? "";
+    const accepted: Record<string, string[]> = {
+      "image/png": ["png"], "image/jpeg": ["jpg", "jpeg"], "image/gif": ["gif"], "image/webp": ["webp"],
+    };
+    if (!file.size || file.size > 10 * 1024 * 1024 || !accepted[file.type]?.includes(extension)) {
+      setLocalStoryFeedback("PNG、JPEG、GIF、WebPの画像（1枚10MiB以下）を選んでください。");
+      return;
+    }
+    const sceneId = active.id;
+    const editor = localStoryEditorRef.current;
+    const inserted = insertLocalMarkdownImage(localStoryDraft, editor?.selectionStart ?? localStoryDraft.length, file.name);
+    const previousKeys = new Set(manualSlots.map((slot) => slot.slotKey));
+    updateLocalStory(inserted.markdown);
+    try {
+      await persistLocalStory(sceneId, inserted.markdown);
+      const refreshed = await loadManualImageContext(sceneId);
+      const normalized = normalizeLocalImageFilename(file.name);
+      const slot = refreshed.slots.find((candidate) => !previousKeys.has(candidate.slotKey)
+        && normalizeLocalImageFilename(candidate.label) === normalized)
+        ?? [...refreshed.slots].reverse().find((candidate) => normalizeLocalImageFilename(candidate.label) === normalized);
+      if (!slot) throw new Error("追加した画像の保存場所を作成できませんでした。本文は保持されています。");
+      await uploadManualImages([{ slot, file }]);
+      requestAnimationFrame(() => {
+        editor?.focus({ preventScroll: true });
+        editor?.setSelectionRange(inserted.cursor, inserted.cursor);
+      });
+    } catch (reason) {
+      setLocalStoryFeedback(reason instanceof Error ? reason.message : "画像を追加できませんでした。再試行できます。");
+    }
+  }
+
+  async function removeLocalStoryImage(image: LocalMarkdownImage) {
+    if (!active || manualUpload.active) return;
+    const sceneId = active.id;
+    const markdown = removeLocalMarkdownImage(localStoryDraft, image);
+    updateLocalStory(markdown);
+    try {
+      await persistLocalStory(sceneId, markdown);
+      await loadManualImageContext(sceneId);
+      setLocalStoryFeedback("画像を本文と画像管理から削除しました。");
+    } catch (reason) {
+      setLocalStoryFeedback(reason instanceof Error ? reason.message : "画像の削除を保存できませんでした。再試行できます。");
     }
   }
   function assignSelectedFiles(files: File[]) {
@@ -1532,6 +1591,7 @@ export function WorkspaceClient({
     ?? sceneSource?.local_html
     ?? sceneSource?.synced_html
     ?? "";
+  const localStoryImages = linkLocalMarkdownImages(localStoryDraft, manualSlots);
   function resolveDisplayMarkdown(markdown: string) {
     return resolveStoredImageSources(
       rewriteLocalMarkdownImageSources(markdown, manualSlots),
@@ -1792,22 +1852,88 @@ export function WorkspaceClient({
                   </p>
                 )}
                 {localStoryEditing ? (
-                  <Textarea
-                    ref={localStoryEditorRef}
-                    className="local-story-editor"
-                    data-confluence-story-editor="true"
-                    value={localStoryDraft}
-                    onFocus={() => setActiveEditorPane("left")}
-                    onChange={(event) => updateLocalStory(event.target.value)}
-                    onCompositionStart={() => { localStoryComposing.current = true; }}
-                    onCompositionEnd={(event) => {
-                      localStoryComposing.current = false;
-                      updateLocalStory(event.currentTarget.value);
-                      if (active) scheduleLocalStorySave(active.id, event.currentTarget.value);
-                    }}
-                    spellCheck
-                    aria-label="Confluence本文をgame-canvas内だけで編集"
-                  />
+                  <div className="local-story-editing-surface">
+                    <div className="local-image-toolbar" aria-label="ローカル本文の画像操作">
+                      <div>
+                        <strong>本文の画像</strong>
+                        <small>追加・変更・削除は画像管理にも同期されます</small>
+                      </div>
+                      <Button type="button" size="sm" variant="outline" disabled={manualUpload.active} onClick={() => localImageAddInputRef.current?.click()}>
+                        <ImageIcon size={14} /> 画像を追加
+                      </Button>
+                      <input
+                        ref={localImageAddInputRef}
+                        className="visually-hidden"
+                        type="file"
+                        accept="image/png,image/jpeg,image/gif,image/webp"
+                        disabled={manualUpload.active}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          if (file) void addLocalStoryImage(file);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </div>
+                    {localStoryImages.length > 0 && (
+                      <div className="local-image-list">
+                        {localStoryImages.map((image, index) => {
+                          const slot = image.slot as ManualImageSlot | null;
+                          const label = slot?.label || image.alt || image.source || `画像${index + 1}`;
+                          return (
+                            <article className="local-image-item" key={`${image.start}-${image.end}-${label}`}>
+                              <div className="local-image-thumb">
+                                {slot?.previewSrc || slot?.src
+                                  // Protected same-origin image routes and local blob previews cannot use the optimizer.
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  ? <img src={slot.previewSrc ?? slot.src ?? ""} alt="" />
+                                  : <ImageIcon size={18} aria-hidden="true" />}
+                              </div>
+                              <span title={label}>{label}</span>
+                              <small>{slot?.status === "saved" ? "保存済み" : slot?.status === "uploading" ? "保存中" : "未設定"}</small>
+                              {slot && (
+                                <>
+                                  <Button asChild type="button" size="sm" variant="ghost" disabled={manualUpload.active}>
+                                    <label htmlFor={`local-image-replace-${slot.slotKey}-${index}`}>変更</label>
+                                  </Button>
+                                  <input
+                                    id={`local-image-replace-${slot.slotKey}-${index}`}
+                                    className="visually-hidden"
+                                    type="file"
+                                    accept="image/png,image/jpeg,image/gif,image/webp"
+                                    disabled={manualUpload.active}
+                                    onChange={(event) => {
+                                      const file = event.currentTarget.files?.[0];
+                                      if (file) void uploadManualImages([{ slot, file }]);
+                                      event.currentTarget.value = "";
+                                    }}
+                                  />
+                                </>
+                              )}
+                              <Button type="button" size="sm" variant="ghost" disabled={manualUpload.active} onClick={() => void removeLocalStoryImage(image)} aria-label={`${label}を削除`}>
+                                <X size={14} /> 削除
+                              </Button>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <Textarea
+                      ref={localStoryEditorRef}
+                      className="local-story-editor"
+                      data-confluence-story-editor="true"
+                      value={localStoryDraft}
+                      onFocus={() => setActiveEditorPane("left")}
+                      onChange={(event) => updateLocalStory(event.target.value)}
+                      onCompositionStart={() => { localStoryComposing.current = true; }}
+                      onCompositionEnd={(event) => {
+                        localStoryComposing.current = false;
+                        updateLocalStory(event.currentTarget.value);
+                        if (active) scheduleLocalStorySave(active.id, event.currentTarget.value);
+                      }}
+                      spellCheck
+                      aria-label="Confluence本文をgame-canvas内だけで編集"
+                    />
+                  </div>
                 ) : sceneSource.local_markdown != null ? (
                   <MarkdownView markdown={resolveDisplayMarkdown(sceneSource.local_markdown)} />
                 ) : (
