@@ -1832,7 +1832,7 @@ export function WorkspaceClient({
           <div className="pane-heading">
             <div>
               <p className="pane-kicker">CONFLUENCE STORY</p>
-              <h2>{sceneSource?.page_title ?? active?.title ?? "ストーリー本文"}</h2>
+              <h2>{active?.title ?? sceneSource?.page_title ?? "ストーリー本文"}</h2>
             </div>
             <div className="pane-tools">
               {sceneSource?.has_local_edit && <Badge variant="outline">game-canvas編集</Badge>}
