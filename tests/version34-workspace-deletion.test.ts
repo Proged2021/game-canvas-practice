@@ -161,13 +161,13 @@ test("モバイル・長名・キーボードfocus表示を維持する", async 
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*workspace-delete-dialog/);
 });
 
-test("runtimeVersion 37をno-storeで公開しversion33以前の主要機能を保持する", async () => {
+test("runtimeVersion 38をno-storeで公開しversion33以前の主要機能を保持する", async () => {
   const [version, runtime, dashboard, workspace, markdown] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
     read("components/dashboard-client.tsx"), read("components/workspace-client.tsx"),
     read("components/markdown-view.tsx"),
   ]);
-  assert.match(version, /"37"/);
+  assert.match(version, /"38"/);
   assert.match(runtime, /cache-control.*no-store/s);
   assert.match(dashboard, /copy|workspace-delete-button/i);
   assert.match(workspace, /別の方法で画像を追加/);

@@ -10,7 +10,9 @@ import {
 } from "react";
 import {
   AlertCircle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   BookOpen,
   Check,
   Copy,
@@ -287,6 +289,7 @@ export function WorkspaceClient({
     [sceneError, setSceneError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Scene | null>(null);
   const [deleteSaving, setDeleteSaving] = useState(false);
+  const [reorderSaving, setReorderSaving] = useState(false);
   const deleteCancelRef = useRef<HTMLButtonElement>(null);
   const [restoreSavingId, setRestoreSavingId] = useState("");
   const [displayNameOpen, setDisplayNameOpen] = useState(false);
@@ -652,6 +655,46 @@ export function WorkspaceClient({
       setSceneCreating(false);
     }
   }
+  async function moveScene(sceneId: string, direction: -1 | 1) {
+    if (!data || !editable || !editMode || reorderSaving) return;
+    const ordered = stableSceneOrder(data.scenes);
+    const currentIndex = ordered.findIndex((scene) => scene.id === sceneId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
+    const next = [...ordered];
+    [next[currentIndex], next[targetIndex]] = [next[targetIndex], next[currentIndex]];
+    const positioned = next.map((scene, position) => ({ ...scene, position }));
+    setReorderSaving(true);
+    setData((previous) => previous ? { ...previous, scenes: positioned } : previous);
+    try {
+      const response = await fetch(`/api/workspaces/${slug}/scenes`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-plotline-csrf": "reorder-scenes",
+          "x-plotline-edit-mode": "true",
+        },
+        body: JSON.stringify({ order: next.map((scene) => scene.id) }),
+      });
+      const result = await response.json() as { error?: string; positions?: Array<{ id: string; position: number }> };
+      if (!response.ok) throw new Error(result.error ?? "場面の順番を保存できませんでした");
+      const positions = new Map((result.positions ?? []).map((item) => [item.id, item.position]));
+      setData((previous) => previous ? {
+        ...previous,
+        scenes: stableSceneOrder(previous.scenes.map((scene) => ({
+          ...scene,
+          position: positions.get(scene.id) ?? scene.position,
+        }))),
+      } : previous);
+      for (const scene of positioned) latestScenes.current.set(scene.id, scene);
+      setError("");
+    } catch (caught) {
+      setData((previous) => previous ? { ...previous, scenes: ordered } : previous);
+      setError(caught instanceof Error ? caught.message : "場面の順番を保存できませんでした");
+    } finally {
+      setReorderSaving(false);
+    }
+  }
   async function deleteScene() {
     if (!deleteTarget || deleteSaving || !editMode || !editable || !data) return;
     setDeleteSaving(true);
@@ -943,7 +986,7 @@ export function WorkspaceClient({
     };
     let completed = 0;
     let savedCount = 0;
-    let lastRuntime = "37";
+    let lastRuntime = "38";
     const failures: string[] = [];
     for (const { slot, file } of assignments) {
       let uploadId = "";
@@ -1480,7 +1523,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:37</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:38</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);
@@ -1751,11 +1794,23 @@ export function WorkspaceClient({
                   <strong>{s.title}</strong>
                 </button>
                 {editMode && editable && (
-                  <button type="button" className="scene-delete-button"
-                    onClick={(event) => { event.stopPropagation(); setDeleteTarget(s); }}
-                    disabled={deleteSaving} aria-label={`「${s.title}」を削除`} title="場面を削除">
-                    <X size={15} />
-                  </button>
+                  <div className="scene-order-actions" aria-label={`「${s.title}」の順番を変更`}>
+                    <button type="button" className="scene-move-button"
+                      onClick={() => void moveScene(s.id, -1)}
+                      disabled={reorderSaving || i === 0} aria-label={`「${s.title}」を上へ移動`} title="上へ移動">
+                      <ArrowUp size={14} />
+                    </button>
+                    <button type="button" className="scene-move-button"
+                      onClick={() => void moveScene(s.id, 1)}
+                      disabled={reorderSaving || i === data.scenes.length - 1} aria-label={`「${s.title}」を下へ移動`} title="下へ移動">
+                      <ArrowDown size={14} />
+                    </button>
+                    <button type="button" className="scene-delete-button"
+                      onClick={(event) => { event.stopPropagation(); setDeleteTarget(s); }}
+                      disabled={deleteSaving || reorderSaving} aria-label={`「${s.title}」を削除`} title="場面を削除">
+                      <X size={15} />
+                    </button>
+                  </div>
                 )}
               </div>
             ))}

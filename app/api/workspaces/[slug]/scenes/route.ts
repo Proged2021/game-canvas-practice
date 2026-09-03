@@ -79,6 +79,7 @@ export async function PATCH(
     title?: string;
     markdown?: string;
     baseRevision?: number;
+    order?: string[];
   };
   try {
     body = await request.json();
@@ -87,6 +88,25 @@ export async function PATCH(
       { error: "入力内容を読み取れませんでした" },
       { status: 400 },
     );
+  }
+  if (body.order) {
+    if (!validateSameOriginJson(request, "reorder-scenes") || request.headers.get("x-plotline-edit-mode") !== "true")
+      return Response.json({ error: "編集モードでのみ場面の順番を変更できます" }, { status: 403 });
+    if (!Array.isArray(body.order) || body.order.length === 0 || new Set(body.order).size !== body.order.length
+      || body.order.some((id) => typeof id !== "string" || !id))
+      return Response.json({ error: "場面の並び順が正しくありません" }, { status: 400 });
+    const database = db();
+    const current = await database.prepare(
+      "SELECT id FROM scenes WHERE workspace_id=?1 AND deleted_at IS NULL ORDER BY position ASC,id ASC",
+    ).bind(auth.membership.workspace_id).all<{ id: string }>();
+    const currentIds = current.results.map((scene) => scene.id);
+    if (currentIds.length !== body.order.length || currentIds.some((id) => !body.order!.includes(id)))
+      return Response.json({ error: "場面一覧が更新されています。再読み込みしてからもう一度お試しください" }, { status: 409 });
+    const positions = body.order.map((id, position) => ({ id, position }));
+    await database.batch(positions.map(({ id, position }) => database.prepare(
+      "UPDATE scenes SET position=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2 AND workspace_id=?3 AND deleted_at IS NULL",
+    ).bind(position, id, auth.membership.workspace_id)));
+    return Response.json({ positions }, { headers: { "cache-control": "no-store" } });
   }
   if (!body.id || !Number.isInteger(body.baseRevision))
     return Response.json(

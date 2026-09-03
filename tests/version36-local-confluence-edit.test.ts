@@ -117,13 +117,13 @@ test("手動画像更新は同期本文を更新しつつローカル表示を�
   assert.match(client, /synced_html: (started|result)\.source!/);
 });
 
-test("workspace削除はローカル編集も含みruntimeVersion 37を公開する", async () => {
+test("workspace削除はローカル編集も含みruntimeVersion 38を公開する", async () => {
   const [deletion, version, runtime, client] = await Promise.all([
     read("lib/workspace-deletion.ts"), read("lib/runtime-version.ts"),
     read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
   assert.match(deletion, /DELETE FROM scene_confluence_local_edits WHERE workspace_id=\?1/);
-  assert.match(version, /"37"/);
+  assert.match(version, /"38"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:37/);
+  assert.match(client, /実行版:38/);
 });
