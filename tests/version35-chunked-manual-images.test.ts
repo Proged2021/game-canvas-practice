@@ -158,7 +158,7 @@ test("stale sceneでは結果を別場面UIへ適用しない", async () => {
 test("slotごとloadingからsuccess/errorへ更新し失敗後再試行できる", async () => {
   const client = await read("components/workspace-client.tsx");
   assert.match(client, /status: "uploading", error: undefined/);
-  assert.match(client, /status: "error", error: message/);
+  assert.match(client, /status: "error", error: `\$\{message\} 以前の画像は保持されています。再試行できます。`/);
   assert.match(client, /setManualUpload\(\{ active: false/);
   assert.match(client, /画像\$\{savedCount\}件を追加しました/);
 });
@@ -180,9 +180,9 @@ test("runtime35・no-storeとversion34以前の主要UIを保持する", async (
     read("components/workspace-client.tsx"), read("components/dashboard-client.tsx"),
     read("components/markdown-view.tsx"),
   ]);
-  assert.match(version, /"39"/);
+  assert.match(version, /"40"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(workspace, /実行版:39/);
+  assert.match(workspace, /実行版:40/);
   assert.match(workspace, /restoreScene|自分の表示名|invite/i);
   assert.match(dashboard, /workspace-delete-button/);
   assert.match(markdown, /remarkPlotlineBreaks|remarkPlotlineCallouts/);

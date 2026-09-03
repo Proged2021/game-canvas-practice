@@ -105,7 +105,7 @@ test("編集原文・閲覧切替・場面切替は同じ選択場面Markdownを
   const client = await read("components/workspace-client.tsx");
   assert.match(client, /value=\{active\.markdown\}/);
   assert.match(client, /updateScene\(\{ markdown: e\.target\.value \}\)/);
-  assert.match(client, /<MarkdownView markdown=\{active\.markdown\}/);
+  assert.match(client, /<MarkdownView markdown=\{resolveStoredImageSources\(active\.markdown, manualSlots\)\}/);
   assert.match(client, /setSelectedId\(s\.id\)/);
 });
 
@@ -130,11 +130,11 @@ test("version31の30日削除復元・表示名とUndo\/Redoを維持する", as
   assert.match(profile, /workspace_id=\?2 AND account_key=\?3/);
 });
 
-test("runtimeVersion 39・UI表示・no-store markerを公開する", async () => {
+test("runtimeVersion 40・UI表示・no-store markerを公開する", async () => {
   const [version, runtime, client] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
-  assert.match(version, /"39"/);
+  assert.match(version, /"40"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:39/);
+  assert.match(client, /実行版:40/);
 });

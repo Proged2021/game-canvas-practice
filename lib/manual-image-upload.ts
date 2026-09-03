@@ -1,6 +1,7 @@
 import { db } from "./db.ts";
 import { loadManualSceneAssets, discardSceneAssetGeneration } from "./confluence-assets.ts";
 import {
+  buildAvailableImageSlots,
   extractConfluenceImageSlots,
   MAX_MANUAL_IMAGES_PER_SCENE,
   MAX_MANUAL_SCENE_BYTES,
@@ -66,12 +67,23 @@ export async function sha256Hex(bytes: ArrayBuffer | Uint8Array) {
 }
 
 async function sourceForScene(workspaceId: string, sceneId: string) {
-  return db().prepare(`SELECT src.page_id,src.synced_html
+  return db().prepare(`SELECT src.page_id,src.synced_html,local.markdown AS local_markdown,scene.markdown AS scene_markdown
     FROM scene_confluence_sources src
     JOIN scenes scene ON scene.id=src.scene_id AND scene.workspace_id=src.workspace_id AND scene.deleted_at IS NULL
+    LEFT JOIN scene_confluence_local_edits local ON local.scene_id=src.scene_id
+      AND local.workspace_id=src.workspace_id AND local.page_id=src.page_id
     WHERE src.workspace_id=?1 AND src.scene_id=?2`)
     .bind(workspaceId, sceneId)
-    .first<{ page_id: string; synced_html: string }>();
+    .first<{ page_id: string; synced_html: string; local_markdown: string | null; scene_markdown: string }>();
+}
+
+async function slotsForSource(source: NonNullable<Awaited<ReturnType<typeof sourceForScene>>>) {
+  return buildAvailableImageSlots({
+    pageId: source.page_id,
+    syncedHtml: source.synced_html,
+    localMarkdown: source.local_markdown,
+    sceneMarkdown: source.scene_markdown,
+  });
 }
 
 export type StartManualUploadInput = {
@@ -103,7 +115,7 @@ export async function startManualImageUpload(input: {
   const source = await sourceForScene(input.workspaceId, input.sceneId);
   if (!source)
     throw new ManualImageUploadError("IMG-SLOT", "先にこの場面のConfluence本文を同期してください。", 409);
-  const slots = extractConfluenceImageSlots(source.synced_html);
+  const slots = await slotsForSource(source);
   if (!slots.some((slot) => slot.slotKey === body.slotKey))
     throw new ManualImageUploadError("IMG-SLOT", "画像の割り当て先が更新されています。場面を開き直してください。", 409);
 
@@ -209,7 +221,7 @@ export async function completeManualImageUpload(session: ManualUploadSession) {
   const source = await sourceForScene(session.workspace_id, session.scene_id);
   if (!source || source.page_id !== session.page_id)
     throw new ManualImageUploadError("IMG-SLOT", "場面のConfluence情報が更新されています。もう一度画像を選んでください。", 409);
-  const slots = extractConfluenceImageSlots(source.synced_html);
+  const slots = await slotsForSource(source);
   if (!slots.some((slot) => slot.slotKey === session.slot_key))
     throw new ManualImageUploadError("IMG-SLOT", "画像の割り当て先が更新されています。場面を開き直してください。", 409);
   const rows = await database.prepare(`SELECT chunk_index,byte_size,sha256,data FROM manual_image_upload_chunks
@@ -298,7 +310,10 @@ export async function completeManualImageUpload(session: ManualUploadSession) {
 }
 
 export async function buildManualUploadResult(workspaceId: string, sceneId: string, pageId: string, syncedHtml: string, saved: number) {
-  const slots = extractConfluenceImageSlots(syncedHtml);
+  const source = await sourceForScene(workspaceId, sceneId);
+  const slots = source && source.page_id === pageId
+    ? await slotsForSource({ ...source, synced_html: syncedHtml })
+    : extractConfluenceImageSlots(syncedHtml);
   const current = await loadManualSceneAssets(workspaceId, sceneId, pageId);
   const savedMap = new Map(current.map((item) => [item.slot_key, item.asset_key]));
   const proxyPrefix = `/api/workspaces/${encodeURIComponent(workspaceId)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
