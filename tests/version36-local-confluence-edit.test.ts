@@ -24,7 +24,7 @@ test("GETは同じworkspace・scene・pageのローカル本文だけを表示�
   assert.match(route, /display_html: localHtml \|\| typed\.synced_html/);
   assert.match(route, /has_local_edit: typed\.local_html != null \|\| typed\.local_markdown != null/);
   assert.match(route, /local_markdown: localMarkdown/);
-  assert.match(route, /extractConfluenceImageSlots\(typed\.synced_html\)/);
+  assert.match(route, /buildAvailableImageSlots\(\{[\s\S]*syncedHtml: typed\.synced_html[\s\S]*localMarkdown: typed\.local_markdown/);
   assert.match(route, /cache-control": "no-store/);
 });
 

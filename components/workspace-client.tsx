@@ -77,6 +77,7 @@ import {
 import { CONFLUENCE_CALLBACK_URL, SITE_ORIGIN } from "@/lib/site-urls";
 import { chooseSceneAfterDeletion, stableSceneOrder } from "@/lib/scene-order";
 import { copyTextWithFallback } from "@/lib/clipboard";
+import { resolveStoredImageSources } from "@/lib/confluence-manual-images";
 import { rewriteLocalMarkdownImageSources } from "@/lib/local-image-links";
 
 type Scene = {
@@ -146,6 +147,7 @@ type ManualImageSlot = {
   label: string;
   status: "saved" | "missing" | "error" | "uploading";
   src?: string | null;
+  previewSrc?: string;
   error?: string;
 };
 type ManualImageUploadResult = {
@@ -1053,11 +1055,21 @@ export function WorkspaceClient({
   async function uploadManualImages(assignments: Array<{ slot: ManualImageSlot; file: File }>) {
     if (!active || manualUpload.active || !assignments.length) return;
     const uploadSceneId = active.id;
+    if (localStoryDirty || localStorySaveState === "saving") {
+      try {
+        await flushLocalStory(uploadSceneId);
+      } catch {
+        setManualUpload({ active: false, completed: 0, total: assignments.length, message: "本文を保存できないため画像追加を開始できません。本文を再保存してからお試しください。" });
+        return;
+      }
+    }
     const total = assignments.length;
+    const previousSlots = new Map(manualSlots.map((slot) => [slot.slotKey, slot]));
+    const previews = new Map(assignments.map(({ slot, file }) => [slot.slotKey, URL.createObjectURL(file)]));
     setManualUpload({ active: true, completed: 0, total, message: `${total}件中0件を保存しています…` });
     setManualSlots((previous) => previous.map((slot) =>
       assignments.some((item) => item.slot.slotKey === slot.slotKey)
-        ? { ...slot, status: "uploading", error: undefined }
+        ? { ...slot, previewSrc: previews.get(slot.slotKey), status: "uploading", error: undefined }
         : slot));
     type UploadResult = ManualImageUploadResult;
     const endpoint = `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(uploadSceneId)}/images/uploads`;
@@ -1137,7 +1149,7 @@ export function WorkspaceClient({
         failures.push(message);
         if (selectedSceneIdRef.current === uploadSceneId)
           setManualSlots((previous) => previous.map((item) => item.slotKey === slot.slotKey
-            ? { ...item, status: "error", error: message }
+            ? { ...item, src: previousSlots.get(item.slotKey)?.src, previewSrc: undefined, status: "error", error: `${message} 以前の画像は保持されています。再試行できます。` }
             : item));
         if (uploadId)
           void requestJson(`${endpoint}/${encodeURIComponent(uploadId)}`, "DELETE", {}).catch(() => undefined);
@@ -1148,7 +1160,23 @@ export function WorkspaceClient({
     const message = failures.length
       ? `${savedCount}件を追加し、${failures.length}件は保存できませんでした。${failures[0]}`
       : `画像${savedCount}件を追加しました。実行版:${lastRuntime}`;
+    for (const preview of previews.values()) URL.revokeObjectURL(preview);
     setManualUpload({ active: false, completed: savedCount, total, message });
+  }
+
+  async function refreshManualImageSlots(sceneId: string) {
+    try {
+      await flushLocalStory(sceneId);
+      const response = await fetch(`/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(sceneId)}`, { cache: "no-store" });
+      const result = await response.json().catch(() => ({})) as { source?: SceneConfluenceSource; slots?: ManualImageSlot[]; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "画像一覧を更新できませんでした。");
+      if (selectedSceneIdRef.current === sceneId) {
+        if (result.source) setSceneSource(result.source);
+        setManualSlots(result.slots ?? []);
+      }
+    } catch (reason) {
+      setManualUpload({ active: false, completed: 0, total: 0, message: reason instanceof Error ? reason.message : "画像一覧を更新できませんでした。" });
+    }
   }
   function assignSelectedFiles(files: File[]) {
     const available = manualSlots.filter((slot) => slot.status !== "saved");
@@ -1504,6 +1532,12 @@ export function WorkspaceClient({
     ?? sceneSource?.local_html
     ?? sceneSource?.synced_html
     ?? "";
+  function resolveDisplayMarkdown(markdown: string) {
+    return resolveStoredImageSources(
+      rewriteLocalMarkdownImageSources(markdown, manualSlots),
+      manualSlots,
+    );
+  }
   return (
     <main className="workspace-shell">
       <header className="workspace-topbar">
@@ -1775,7 +1809,7 @@ export function WorkspaceClient({
                     aria-label="Confluence本文をgame-canvas内だけで編集"
                   />
                 ) : sceneSource.local_markdown != null ? (
-                  <MarkdownView markdown={sceneSource.local_markdown} />
+                  <MarkdownView markdown={resolveDisplayMarkdown(sceneSource.local_markdown)} />
                 ) : (
                   <div className="confluence-html" dangerouslySetInnerHTML={{ __html: confluenceStoryHtml }} />
                 )}
@@ -1959,7 +1993,10 @@ export function WorkspaceClient({
                     <Dialog
                       open={confluenceDialogOpen}
                       onOpenChange={(open) => {
-                        if (!syncing) setConfluenceDialogOpen(open);
+                        if (!syncing) {
+                          setConfluenceDialogOpen(open);
+                          if (open && active) void refreshManualImageSlots(active.id);
+                        }
                       }}
                     >
                       <DialogTrigger asChild>
@@ -2137,7 +2174,11 @@ export function WorkspaceClient({
                                 {manualSlots.map((slot) => (
                                   <article className="manual-image-slot" key={slot.slotKey}>
                                     <div className="manual-image-preview">
-                                      {slot.src ? <img src={slot.src} alt="" /> : <ImageIcon size={22} aria-hidden="true" />}
+                                      {slot.previewSrc || slot.src
+                                        // Protected same-origin image routes and local blob previews cannot use the optimizer.
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        ? <img src={slot.previewSrc ?? slot.src ?? ""} alt="" />
+                                        : <ImageIcon size={22} aria-hidden="true" />}
                                     </div>
                                     <div className="manual-image-copy">
                                       <strong>{slot.label}</strong>
@@ -2208,7 +2249,7 @@ export function WorkspaceClient({
                       aria-label="Markdown本文"
                     />
                   ) : (
-                    <MarkdownView markdown={active.markdown} />
+                    <MarkdownView markdown={resolveDisplayMarkdown(active.markdown)} />
                   )}
                 </div>
                 {editMode && editable && (

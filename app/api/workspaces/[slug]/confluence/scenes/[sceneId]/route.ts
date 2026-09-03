@@ -1,6 +1,6 @@
 import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { extractConfluenceImageSlots } from "@/lib/confluence-manual-images";
+import { buildAvailableImageSlots } from "@/lib/confluence-manual-images";
 import { loadManualSceneAssets } from "@/lib/confluence-assets";
 import { rewriteLocalHtmlImageSources, rewriteLocalMarkdownImageSources } from "@/lib/local-image-links";
 
@@ -24,19 +24,25 @@ export async function GET(
     .prepare(`SELECT src.scene_id,src.page_id,src.page_url,src.page_title,src.page_version,src.synced_html,
       src.last_synced_at,src.last_checked_at,src.last_error,src.manual_generation,
       local.html AS local_html,local.markdown AS local_markdown,COALESCE(local.revision,0) AS local_revision,
-      local.updated_at AS local_updated_at
+      local.updated_at AS local_updated_at,scene.markdown AS scene_markdown
       FROM scene_confluence_sources src
+      JOIN scenes scene ON scene.id=src.scene_id AND scene.workspace_id=src.workspace_id AND scene.deleted_at IS NULL
       LEFT JOIN scene_confluence_local_edits local
         ON local.scene_id=src.scene_id AND local.workspace_id=src.workspace_id AND local.page_id=src.page_id
       WHERE src.scene_id=?1 AND src.workspace_id=?2`)
     .bind(sceneId, auth.membership.workspace_id)
     .first();
   if (!source) return Response.json({ source: null, slots: [] }, { headers: { "cache-control": "no-store" } });
-  const typed = source as { page_id: string; synced_html: string; local_html: string | null; local_markdown: string | null; local_revision: number };
+  const typed = source as { page_id: string; synced_html: string; local_html: string | null; local_markdown: string | null; local_revision: number; scene_markdown: string };
   const manual = await loadManualSceneAssets(auth.membership.workspace_id, sceneId, typed.page_id);
   const mapping = new Map(manual.map((item) => [item.slot_key, item.asset_key]));
   const proxyPrefix = `/api/workspaces/${encodeURIComponent(auth.membership.workspace_id)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
-  const slots = extractConfluenceImageSlots(typed.synced_html).map((slot) => ({
+  const slots = (await buildAvailableImageSlots({
+    pageId: typed.page_id,
+    syncedHtml: typed.synced_html,
+    localMarkdown: typed.local_markdown,
+    sceneMarkdown: typed.scene_markdown,
+  })).map((slot) => ({
     slotKey: slot.slotKey,
     label: slot.label,
     status: mapping.has(slot.slotKey) ? "saved" : "missing",

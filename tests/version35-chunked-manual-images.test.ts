@@ -158,7 +158,7 @@ test("stale sceneでは結果を別場面UIへ適用しない", async () => {
 test("slotごとloadingからsuccess/errorへ更新し失敗後再試行できる", async () => {
   const client = await read("components/workspace-client.tsx");
   assert.match(client, /status: "uploading", error: undefined/);
-  assert.match(client, /status: "error", error: message/);
+  assert.match(client, /status: "error", error: `\$\{message\} 以前の画像は保持されています。再試行できます。`/);
   assert.match(client, /setManualUpload\(\{ active: false/);
   assert.match(client, /画像\$\{savedCount\}件を追加しました/);
 });

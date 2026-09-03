@@ -48,7 +48,7 @@ test("Markdown原文をCRLFからLFへ正規化しGFM等はMarkdownViewで表示
     read("components/workspace-client.tsx"), read("components/markdown-view.tsx"),
   ]);
   assert.match(client, /markdown\.replace\(\/\\r\\n\?\/g, "\\n"\)/);
-  assert.match(client, /<MarkdownView markdown=\{sceneSource\.local_markdown\}/);
+  assert.match(client, /<MarkdownView markdown=\{resolveDisplayMarkdown\(sceneSource\.local_markdown\)\}/);
   assert.match(view, /remarkGfm/);
   assert.match(view, /remarkMath/);
   assert.match(view, /remarkPlotlineCallouts/);

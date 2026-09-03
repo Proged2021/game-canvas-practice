@@ -105,7 +105,7 @@ test("編集原文・閲覧切替・場面切替は同じ選択場面Markdownを
   const client = await read("components/workspace-client.tsx");
   assert.match(client, /value=\{active\.markdown\}/);
   assert.match(client, /updateScene\(\{ markdown: e\.target\.value \}\)/);
-  assert.match(client, /<MarkdownView markdown=\{active\.markdown\}/);
+  assert.match(client, /<MarkdownView markdown=\{resolveDisplayMarkdown\(active\.markdown\)\}/);
   assert.match(client, /setSelectedId\(s\.id\)/);
 });
 

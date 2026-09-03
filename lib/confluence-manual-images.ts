@@ -12,6 +12,12 @@ export type ConfluenceImageSlot = {
   occurrence: number;
 };
 
+export type StoredImageSlot = {
+  slotKey: string;
+  label: string;
+  src?: string | null;
+};
+
 function decodeOnce(value: string) {
   try { return decodeURIComponent(value); } catch { return value; }
 }
@@ -31,6 +37,88 @@ async function stableSlotKey(pageId: string, filename: string, occurrence: numbe
   const input = new TextEncoder().encode(`${pageId}\u0000${filename}\u0000${occurrence}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
   return Array.from(digest.slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function markdownImageSources(markdown: string) {
+  const sources: string[] = [];
+  for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g))
+    sources.push(match[1] ?? match[2] ?? "");
+  for (const match of markdown.matchAll(/<img\b[^>]*>/gi)) {
+    const source = attribute(match[0], "src");
+    if (source) sources.push(source);
+  }
+  return sources;
+}
+
+function isLocalImageReference(source: string) {
+  return Boolean(source)
+    && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(source)
+    && !source.startsWith("/api/");
+}
+
+export async function buildAvailableImageSlots(input: {
+  pageId: string;
+  syncedHtml: string;
+  localMarkdown?: string | null;
+  sceneMarkdown?: string | null;
+}) {
+  const slots = extractConfluenceImageSlots(input.syncedHtml);
+  const known = new Set(slots.map((slot) => normalizeManualFilename(slot.label)).filter(Boolean));
+  for (const source of markdownImageSources(`${input.localMarkdown ?? ""}\n${input.sceneMarkdown ?? ""}`)) {
+    if (!isLocalImageReference(source)) continue;
+    const normalized = normalizeManualFilename(source);
+    if (!normalized || known.has(normalized)) continue;
+    known.add(normalized);
+    slots.push({
+      slotKey: await stableSlotKey(`${input.pageId}:local-markdown`, normalized, 1),
+      label: safeLabel(source, slots.length),
+    });
+    if (slots.length >= MAX_MANUAL_IMAGES_PER_SCENE) break;
+  }
+  return slots;
+}
+
+function markdownAlt(value: string) {
+  return value.replace(/[\]\r\n]/g, " ").trim();
+}
+
+/** Resolves persisted image references without ever persisting blob URLs into Markdown. */
+export function resolveStoredImageSources(markdown: string, slots: StoredImageSlot[]) {
+  const available = slots.filter((slot): slot is StoredImageSlot & { src: string } => Boolean(slot.src));
+  const used = new Set<string>();
+  const resolve = (source: string) => {
+    const exact = available.find((slot) => slot.src === source);
+    if (exact) {
+      used.add(exact.slotKey);
+      return exact.src;
+    }
+    const normalized = normalizeManualFilename(source);
+    const named = available.find((slot) => !used.has(slot.slotKey)
+      && normalizeManualFilename(slot.label) === normalized);
+    if (named) {
+      used.add(named.slotKey);
+      return named.src;
+    }
+    if (/^(?:blob:|\/api\/workspaces\/[^/]+\/scenes\/[^/]+\/confluence\/assets\/)/i.test(source)) {
+      const ordered = available.find((slot) => !used.has(slot.slotKey));
+      if (ordered) {
+        used.add(ordered.slotKey);
+        return ordered.src;
+      }
+    }
+    return source;
+  };
+  const htmlResolved = markdown.replace(/<img\b[^>]*>/gi, (tag) => {
+    const source = attribute(tag, "src");
+    if (!source) return "";
+    const alt = attribute(tag, "alt") || attribute(tag, "title") || safeLabel(source, 0);
+    return `![${markdownAlt(alt)}](<${resolve(source)}>)`;
+  });
+  return htmlResolved.replace(
+    /!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))((?:\s+(?:"[^"]*"|'[^']*'))?)\s*\)/g,
+    (_whole, alt: string, bracketed: string, plain: string, title: string) =>
+      `![${alt}](<${resolve(bracketed ?? plain ?? "")}>${title ?? ""})`,
+  );
 }
 
 export async function buildConfluenceImageSlots(pageId: string, references: ConfluenceImageReference[]) {
