@@ -2,6 +2,7 @@
 import {
   FormEvent,
   ClipboardEvent as ReactClipboardEvent,
+  PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -10,9 +11,7 @@ import {
 } from "react";
 import {
   AlertCircle,
-  ArrowDown,
   ArrowLeft,
-  ArrowUp,
   BookOpen,
   Check,
   Copy,
@@ -23,6 +22,7 @@ import {
   ExternalLink,
   FileText,
   Image as ImageIcon,
+  GripVertical,
   Link2,
   Loader2,
   Plus,
@@ -290,6 +290,9 @@ export function WorkspaceClient({
   const [deleteTarget, setDeleteTarget] = useState<Scene | null>(null);
   const [deleteSaving, setDeleteSaving] = useState(false);
   const [reorderSaving, setReorderSaving] = useState(false);
+  const [draggingSceneId, setDraggingSceneId] = useState("");
+  const dragOriginalOrder = useRef<Scene[]>([]);
+  const dragCurrentOrder = useRef<Scene[]>([]);
   const deleteCancelRef = useRef<HTMLButtonElement>(null);
   const [restoreSavingId, setRestoreSavingId] = useState("");
   const [displayNameOpen, setDisplayNameOpen] = useState(false);
@@ -655,17 +658,10 @@ export function WorkspaceClient({
       setSceneCreating(false);
     }
   }
-  async function moveScene(sceneId: string, direction: -1 | 1) {
-    if (!data || !editable || !editMode || reorderSaving) return;
-    const ordered = stableSceneOrder(data.scenes);
-    const currentIndex = ordered.findIndex((scene) => scene.id === sceneId);
-    const targetIndex = currentIndex + direction;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
-    const next = [...ordered];
-    [next[currentIndex], next[targetIndex]] = [next[targetIndex], next[currentIndex]];
+  async function saveSceneOrder(next: Scene[], previous: Scene[]) {
     const positioned = next.map((scene, position) => ({ ...scene, position }));
     setReorderSaving(true);
-    setData((previous) => previous ? { ...previous, scenes: positioned } : previous);
+    setData((current) => current ? { ...current, scenes: positioned } : current);
     try {
       const response = await fetch(`/api/workspaces/${slug}/scenes`, {
         method: "PATCH",
@@ -674,26 +670,62 @@ export function WorkspaceClient({
           "x-plotline-csrf": "reorder-scenes",
           "x-plotline-edit-mode": "true",
         },
-        body: JSON.stringify({ order: next.map((scene) => scene.id) }),
+        body: JSON.stringify({ order: positioned.map((scene) => scene.id) }),
       });
       const result = await response.json() as { error?: string; positions?: Array<{ id: string; position: number }> };
       if (!response.ok) throw new Error(result.error ?? "場面の順番を保存できませんでした");
-      const positions = new Map((result.positions ?? []).map((item) => [item.id, item.position]));
-      setData((previous) => previous ? {
-        ...previous,
-        scenes: stableSceneOrder(previous.scenes.map((scene) => ({
-          ...scene,
-          position: positions.get(scene.id) ?? scene.position,
-        }))),
-      } : previous);
       for (const scene of positioned) latestScenes.current.set(scene.id, scene);
       setError("");
     } catch (caught) {
-      setData((previous) => previous ? { ...previous, scenes: ordered } : previous);
+      setData((current) => current ? { ...current, scenes: previous } : current);
       setError(caught instanceof Error ? caught.message : "場面の順番を保存できませんでした");
     } finally {
       setReorderSaving(false);
     }
+  }
+  function moveScene(sceneId: string, direction: -1 | 1) {
+    if (!data || !editable || !editMode || reorderSaving || draggingSceneId) return;
+    const ordered = stableSceneOrder(data.scenes);
+    const currentIndex = ordered.findIndex((scene) => scene.id === sceneId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
+    const next = [...ordered];
+    [next[currentIndex], next[targetIndex]] = [next[targetIndex], next[currentIndex]];
+    void saveSceneOrder(next, ordered);
+  }
+  function beginSceneDrag(event: ReactPointerEvent<HTMLButtonElement>, sceneId: string) {
+    if (!data || !editable || !editMode || reorderSaving) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const ordered = stableSceneOrder(data.scenes);
+    dragOriginalOrder.current = ordered;
+    dragCurrentOrder.current = ordered;
+    setDraggingSceneId(sceneId);
+  }
+  function updateSceneDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!draggingSceneId || !data) return;
+    event.preventDefault();
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-scene-id]")?.dataset.sceneId;
+    const current = dragCurrentOrder.current;
+    const from = current.findIndex((scene) => scene.id === draggingSceneId);
+    const to = current.findIndex((scene) => scene.id === target);
+    if (from < 0 || to < 0 || from === to) return;
+    const next = [...current];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const positioned = next.map((scene, position) => ({ ...scene, position }));
+    dragCurrentOrder.current = positioned;
+    setData((previous) => previous ? { ...previous, scenes: positioned } : previous);
+  }
+  function endSceneDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!draggingSceneId) return;
+    event.preventDefault();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const previous = dragOriginalOrder.current;
+    const next = dragCurrentOrder.current;
+    setDraggingSceneId("");
+    if (previous.map((scene) => scene.id).join("\u0000") === next.map((scene) => scene.id).join("\u0000")) return;
+    void saveSceneOrder(next, previous);
   }
   async function deleteScene() {
     if (!deleteTarget || deleteSaving || !editMode || !editable || !data) return;
@@ -986,7 +1018,7 @@ export function WorkspaceClient({
     };
     let completed = 0;
     let savedCount = 0;
-    let lastRuntime = "38";
+    let lastRuntime = "39";
     const failures: string[] = [];
     for (const { slot, file } of assignments) {
       let uploadId = "";
@@ -1523,7 +1555,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:38</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:39</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);
@@ -1772,7 +1804,7 @@ export function WorkspaceClient({
               )}
             </div>
             {data.scenes.map((s, i) => (
-              <div className={`scene-list-item ${s.id === active?.id ? "active" : ""}`} key={s.id}>
+              <div data-scene-id={s.id} className={`scene-list-item ${s.id === active?.id ? "active" : ""} ${s.id === draggingSceneId ? "dragging" : ""}`} key={s.id}>
                 <button
                   type="button"
                   className="scene-select-button"
@@ -1795,15 +1827,17 @@ export function WorkspaceClient({
                 </button>
                 {editMode && editable && (
                   <div className="scene-order-actions" aria-label={`「${s.title}」の順番を変更`}>
-                    <button type="button" className="scene-move-button"
-                      onClick={() => void moveScene(s.id, -1)}
-                      disabled={reorderSaving || i === 0} aria-label={`「${s.title}」を上へ移動`} title="上へ移動">
-                      <ArrowUp size={14} />
-                    </button>
-                    <button type="button" className="scene-move-button"
-                      onClick={() => void moveScene(s.id, 1)}
-                      disabled={reorderSaving || i === data.scenes.length - 1} aria-label={`「${s.title}」を下へ移動`} title="下へ移動">
-                      <ArrowDown size={14} />
+                    <button type="button" className="scene-drag-handle"
+                      onPointerDown={(event) => beginSceneDrag(event, s.id)}
+                      onPointerMove={updateSceneDrag} onPointerUp={endSceneDrag} onPointerCancel={endSceneDrag}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                        event.preventDefault();
+                        moveScene(s.id, event.key === "ArrowUp" ? -1 : 1);
+                      }}
+                      disabled={reorderSaving} aria-label={`「${s.title}」を上下にスライドして順番を変更`}
+                      title="上下にドラッグして移動（矢印キーでも操作できます）">
+                      <GripVertical size={16} />
                     </button>
                     <button type="button" className="scene-delete-button"
                       onClick={(event) => { event.stopPropagation(); setDeleteTarget(s); }}

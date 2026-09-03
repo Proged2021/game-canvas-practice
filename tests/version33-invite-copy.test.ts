@@ -130,16 +130,16 @@ test("招待tokenは既存hash保存・期限・一回性を維持しconsoleやa
   assert.doesNotMatch(clipboard, /console\.|analytics|localStorage|sessionStorage/);
 });
 
-test("version32機能を保持しruntimeVersion 38をno-storeで公開する", async () => {
+test("version32機能を保持しruntimeVersion 39をno-storeで公開する", async () => {
   const [version, runtime, markdown, client] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
     read("components/markdown-view.tsx"), read("components/workspace-client.tsx"),
   ]);
-  assert.match(version, /"38"/);
+  assert.match(version, /"39"/);
   assert.match(runtime, /cache-control.*no-store/s);
   assert.match(markdown, /remarkPlotlineBreaks/);
   assert.match(markdown, /remarkPlotlineCallouts/);
   assert.match(client, /別の方法で画像を追加/);
   assert.match(client, /restoreScene/);
-  assert.match(client, /実行版:38/);
+  assert.match(client, /実行版:39/);
 });
