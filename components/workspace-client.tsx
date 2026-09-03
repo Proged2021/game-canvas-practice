@@ -17,6 +17,7 @@ import {
   Copy,
   CircleDot,
   ClipboardPaste,
+  ChevronDown,
   Cloud,
   CloudOff,
   ExternalLink,
@@ -56,6 +57,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -1224,6 +1231,32 @@ export function WorkspaceClient({
     }
   }
 
+  async function pasteLocalStoryImage() {
+    try {
+      if (!navigator.clipboard?.read) throw new Error("clipboard read unavailable");
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((value) => ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(value));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        const extension = type === "image/jpeg" ? "jpg" : type.split("/")[1];
+        const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+        await addLocalStoryImage(new File([blob], `clipboard-${stamp}.${extension}`, { type }));
+        return;
+      }
+      throw new Error("image unavailable");
+    } catch {
+      setLocalStoryFeedback("クリップボードの画像を読み取れませんでした。画像をコピーして編集欄でCtrl+V（Macは⌘V）を押してください。");
+    }
+  }
+
+  function handleLocalStoryPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const file = [...event.clipboardData.files].find((value) => ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(value.type));
+    if (!file) return;
+    event.preventDefault();
+    void addLocalStoryImage(file);
+  }
+
   async function removeLocalStoryImage(image: LocalMarkdownImage) {
     if (!active || manualUpload.active) return;
     const sceneId = active.id;
@@ -1858,9 +1891,21 @@ export function WorkspaceClient({
                         <strong>本文の画像</strong>
                         <small>追加・変更・削除は画像管理にも同期されます</small>
                       </div>
-                      <Button type="button" size="sm" variant="outline" disabled={manualUpload.active} onClick={() => localImageAddInputRef.current?.click()}>
-                        <ImageIcon size={14} /> 画像を追加
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button type="button" size="sm" variant="outline" disabled={manualUpload.active} aria-label="画像の追加方法を選ぶ">
+                            <ImageIcon size={14} /> 画像を追加 <ChevronDown size={13} />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => localImageAddInputRef.current?.click()}>
+                            <Upload /> ファイルから選ぶ
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => void pasteLocalStoryImage()}>
+                            <ClipboardPaste /> クリップボードから貼り付け
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <input
                         ref={localImageAddInputRef}
                         className="visually-hidden"
@@ -1924,6 +1969,7 @@ export function WorkspaceClient({
                       value={localStoryDraft}
                       onFocus={() => setActiveEditorPane("left")}
                       onChange={(event) => updateLocalStory(event.target.value)}
+                      onPaste={handleLocalStoryPaste}
                       onCompositionStart={() => { localStoryComposing.current = true; }}
                       onCompositionEnd={(event) => {
                         localStoryComposing.current = false;
