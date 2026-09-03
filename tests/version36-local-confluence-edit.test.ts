@@ -79,8 +79,8 @@ test("画像は同じworkspace・sceneの内部asset proxyだけを保持する"
 test("同じConfluence pageの再同期はローカル編集と参照画像世代を保持する", async () => {
   const sync = await read("app/api/workspaces/[slug]/confluence/sync/route.ts");
   assert.match(sync, /WHERE workspace_id=\?1 AND scene_id=\?2 AND page_id=\?3/);
-  assert.match(sync, /generation && !localEdit/);
-  assert.match(sync, /display_html: localEdit\?\.html \?\? rendered\.html/);
+  assert.match(sync, /generation && \(!localEdit \|\| replaceLocal\)/);
+  assert.match(sync, /display_html: !replaceLocal && localEdit\?\.html \? localEdit\.html : rendered\.html/);
 });
 
 test("別ページへの変更と関連解除では古いローカル編集を安全に除去する", async () => {
@@ -88,7 +88,7 @@ test("別ページへの変更と関連解除では古いローカル編集を�
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"),
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/route.ts"),
   ]);
-  assert.match(sync, /DELETE FROM scene_confluence_local_edits WHERE workspace_id=\?1 AND scene_id=\?2 AND page_id<>\?3/);
+  assert.match(sync, /DELETE FROM scene_confluence_local_edits[\s\S]*workspace_id=\?1 AND scene_id=\?2/);
   assert.match(source, /DELETE FROM scene_confluence_local_edits WHERE scene_id=\?1 AND workspace_id=\?2/);
 });
 
@@ -96,11 +96,11 @@ test("編集モードだけにローカル編集・保存・取消・同期内�
   const client = await read("components/workspace-client.tsx");
   assert.match(client, /sceneSource && editMode && editable && !localStoryEditing/);
   assert.match(client, /ローカル編集/);
-  assert.match(client, /game-canvasへ保存/);
-  assert.match(client, /キャンセル/);
+  assert.match(client, /scheduleLocalStorySave/);
+  assert.match(client, /編集を終了/);
   assert.match(client, /同期内容に戻す/);
   assert.match(client, /Confluenceには反映されません/);
-  assert.match(client, /contentEditable/);
+  assert.match(client, /data-confluence-story-editor="true"/);
   assert.match(client, /aria-label="Confluence本文をgame-canvas内だけで編集"/);
 });
 
@@ -117,13 +117,13 @@ test("手動画像更新は同期本文を更新しつつローカル表示を�
   assert.match(client, /synced_html: (started|result)\.source!/);
 });
 
-test("workspace削除はローカル編集も含みruntimeVersion 36を公開する", async () => {
+test("workspace削除はローカル編集も含みruntimeVersion 37を公開する", async () => {
   const [deletion, version, runtime, client] = await Promise.all([
     read("lib/workspace-deletion.ts"), read("lib/runtime-version.ts"),
     read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
   ]);
   assert.match(deletion, /DELETE FROM scene_confluence_local_edits WHERE workspace_id=\?1/);
-  assert.match(version, /"36"/);
+  assert.match(version, /"37"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:36/);
+  assert.match(client, /実行版:37/);
 });

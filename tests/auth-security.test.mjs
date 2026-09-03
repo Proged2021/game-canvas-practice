@@ -69,5 +69,5 @@ test("OAuth state is single-use and bound to the same opaque account key and own
   assert.match(callback, /user\?\.accountKey/);
   assert.match(state, /record\.user_email !== currentAccountKey/);
   assert.match(state, /membershipRole !== "owner"/);
-  assert.match(await read("lib/runtime-version.ts"), /"36"/);
+  assert.match(await read("lib/runtime-version.ts"), /"37"/);
 });

@@ -22,7 +22,7 @@ export async function GET(
   const source = await db()
     .prepare(`SELECT src.scene_id,src.page_id,src.page_url,src.page_title,src.page_version,src.synced_html,
       src.last_synced_at,src.last_checked_at,src.last_error,src.manual_generation,
-      local.html AS local_html,COALESCE(local.revision,0) AS local_revision,
+      local.html AS local_html,local.markdown AS local_markdown,COALESCE(local.revision,0) AS local_revision,
       local.updated_at AS local_updated_at
       FROM scene_confluence_sources src
       LEFT JOIN scene_confluence_local_edits local
@@ -31,7 +31,7 @@ export async function GET(
     .bind(sceneId, auth.membership.workspace_id)
     .first();
   if (!source) return Response.json({ source: null, slots: [] }, { headers: { "cache-control": "no-store" } });
-  const typed = source as { page_id: string; synced_html: string; local_html: string | null; local_revision: number };
+  const typed = source as { page_id: string; synced_html: string; local_html: string | null; local_markdown: string | null; local_revision: number };
   const manual = await loadManualSceneAssets(auth.membership.workspace_id, sceneId, typed.page_id);
   const mapping = new Map(manual.map((item) => [item.slot_key, item.asset_key]));
   const proxyPrefix = `/api/workspaces/${encodeURIComponent(auth.membership.workspace_id)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;

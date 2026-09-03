@@ -1,0 +1,1 @@
+ALTER TABLE `scene_confluence_local_edits` ADD `markdown` text;

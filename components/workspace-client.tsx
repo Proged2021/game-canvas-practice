@@ -28,7 +28,6 @@ import {
   RefreshCw,
   Redo2,
   RotateCcw,
-  Save,
   Undo2,
   Upload,
   Users,
@@ -103,11 +102,42 @@ type SceneConfluenceSource = {
   last_checked_at?: string;
   last_error?: string | null;
   local_html?: string | null;
+  local_markdown?: string | null;
   local_revision?: number;
   local_updated_at?: string | null;
   display_html?: string;
   has_local_edit?: boolean;
 };
+
+function confluenceHtmlToMarkdown(html: string) {
+  if (typeof DOMParser === "undefined") return "";
+  const document = new DOMParser().parseFromString(html, "text/html");
+  const render = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    if (!(node instanceof HTMLElement)) return "";
+    const children = () => [...node.childNodes].map(render).join("");
+    const tag = node.tagName.toLowerCase();
+    if (tag === "br") return "\n";
+    if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag[1]))} ${children().trim()}\n\n`;
+    if (tag === "p" || tag === "div" || tag === "section" || tag === "article") return `${children().trimEnd()}\n\n`;
+    if (tag === "strong" || tag === "b") return `**${children()}**`;
+    if (tag === "em" || tag === "i") return `*${children()}*`;
+    if (tag === "del" || tag === "s") return `~~${children()}~~`;
+    if (tag === "code" && node.parentElement?.tagName.toLowerCase() !== "pre") return `\`${children()}\``;
+    if (tag === "pre") return `\n\`\`\`\n${node.textContent ?? ""}\n\`\`\`\n\n`;
+    if (tag === "blockquote") return `${children().trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+    if (tag === "a") return `[${children() || node.getAttribute("href") || "リンク"}](${node.getAttribute("href") ?? ""})`;
+    if (tag === "img") return `![${node.getAttribute("alt") ?? "画像"}](${node.getAttribute("src") ?? ""})`;
+    if (tag === "hr") return "\n---\n\n";
+    if (tag === "ul" || tag === "ol") return [...node.children].map((item, index) => {
+      const prefix = tag === "ol" ? `${index + 1}. ` : "- ";
+      return `${prefix}${render(item).trim().replace(/\n/g, "\n  ")}`;
+    }).join("\n") + "\n\n";
+    if (tag === "li") return children();
+    return children();
+  };
+  return [...document.body.childNodes].map(render).join("").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
 type ManualImageSlot = {
   slotKey: string;
   label: string;
@@ -222,10 +252,19 @@ export function WorkspaceClient({
   const [localStoryEditing, setLocalStoryEditing] = useState(false);
   const [localStoryDraft, setLocalStoryDraft] = useState("");
   const [localStoryDirty, setLocalStoryDirty] = useState(false);
-  const [localStorySaving, setLocalStorySaving] = useState(false);
+  const [localStorySaveState, setLocalStorySaveState] = useState<"saved" | "saving" | "dirty" | "conflict" | "error">("saved");
   const [localStoryFeedback, setLocalStoryFeedback] = useState("");
   const [localStoryResetOpen, setLocalStoryResetOpen] = useState(false);
-  const localStoryEditorRef = useRef<HTMLDivElement>(null);
+  const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
+  const localStoryEditorRef = useRef<HTMLTextAreaElement>(null);
+  const [activeEditorPane, setActiveEditorPane] = useState<"left" | "right">("right");
+  const localStoryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const localStoryDrafts = useRef(new Map<string, string>());
+  const localStorySaved = useRef(new Map<string, string>());
+  const localStoryRevisions = useRef(new Map<string, number>());
+  const localStorySaveChains = useRef(new Map<string, Promise<void>>());
+  const localStoryComposing = useRef(false);
+  const [localStoryHistories, setLocalStoryHistories] = useState(new Map<string, SceneHistory>());
   const [confluenceDialogOpen, setConfluenceDialogOpen] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<{
     type: "progress" | "success" | "error";
@@ -273,6 +312,7 @@ export function WorkspaceClient({
   );
   const savingSceneIds = useRef(new Set<string>());
   const queuedSceneIds = useRef(new Set<string>());
+  const sceneComposing = useRef(false);
   const sourceRequestSequence = useRef(0);
   const active = useMemo(
     () => data?.scenes.find((s) => s.id === selectedId) ?? data?.scenes[0],
@@ -380,10 +420,9 @@ export function WorkspaceClient({
     const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous scene immediately so stale Confluence content is never shown.
     setSceneSource(null);
-    setLocalStoryEditing(false);
     setLocalStoryDraft("");
     setLocalStoryDirty(false);
-    setLocalStorySaving(false);
+    setLocalStorySaveState("saved");
     setLocalStoryFeedback("");
     setLocalStoryResetOpen(false);
     setManualSlots([]);
@@ -408,6 +447,20 @@ export function WorkspaceClient({
         if (!response.ok) throw new Error(result.error);
         if (sequence !== sourceRequestSequence.current) return;
         setSceneSource(result.source ?? null);
+        const markdown = result.source
+          ? result.source.local_markdown ?? confluenceHtmlToMarkdown(result.source.local_html ?? result.source.synced_html)
+          : "";
+        setLocalStoryDraft(markdown);
+        setLocalStoryDirty(false);
+        setLocalStorySaveState("saved");
+        localStoryDrafts.current.set(sceneId, markdown);
+        localStorySaved.current.set(sceneId, markdown);
+        localStoryRevisions.current.set(sceneId, result.source?.local_revision ?? 0);
+        setLocalStoryHistories((previous) => {
+          const next = new Map(previous);
+          next.set(sceneId, createSceneHistory({ title: "", markdown }));
+          return next;
+        });
         setManualSlots(result.slots ?? []);
         setPageInput(result.source?.page_url ?? active?.confluence_page_url ?? "");
       })
@@ -538,6 +591,11 @@ export function WorkspaceClient({
       return next;
     });
     applySceneSnapshot(active.id, nextSnapshot);
+    if (sceneComposing.current) {
+      const timer = saveTimers.current.get(active.id);
+      if (timer) clearTimeout(timer);
+      saveTimers.current.delete(active.id);
+    }
   }
   function openSceneDialog() {
     setSceneTitle("");
@@ -751,7 +809,14 @@ export function WorkspaceClient({
     if (!r.ok) return setInviteError(d.error ?? "参加申請を処理できませんでした");
     await load();
   }
-  async function sync() {
+  function requestSync() {
+    if (sceneSource?.has_local_edit || localStoryDirty) {
+      setSyncConfirmOpen(true);
+      return;
+    }
+    void performSync(false);
+  }
+  async function performSync(replaceLocal: boolean) {
     if (syncing || !active) return;
     setSyncing(true);
     setSyncFeedback({ type: "progress", message: "Confluenceを同期中です…" });
@@ -759,7 +824,7 @@ export function WorkspaceClient({
       const r = await fetch(`/api/workspaces/${slug}/confluence/sync`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sceneId: active.id, page: pageInput || sceneSource?.page_id }),
+        body: JSON.stringify({ sceneId: active.id, page: pageInput || sceneSource?.page_id, replaceLocal }),
       });
       const d = await r.json().catch(() => ({})) as {
         error?: string;
@@ -806,6 +871,17 @@ export function WorkspaceClient({
       }> : null).catch(() => null);
       if (refreshed?.source) setSceneSource(refreshed.source);
       if (refreshed?.slots) setManualSlots(refreshed.slots);
+      if (replaceLocal && refreshed?.source) {
+        const markdown = confluenceHtmlToMarkdown(refreshed.source.synced_html);
+        setLocalStoryDraft(markdown);
+        setLocalStoryDirty(false);
+        setLocalStorySaveState("saved");
+        setLocalStoryEditing(false);
+        localStoryDrafts.current.set(active.id, markdown);
+        localStorySaved.current.set(active.id, markdown);
+        localStoryRevisions.current.set(active.id, 0);
+        setLocalStoryHistories((previous) => new Map(previous).set(active.id, createSceneHistory({ title: "", markdown })));
+      }
       setData((previous) =>
         previous
           ? {
@@ -823,6 +899,7 @@ export function WorkspaceClient({
       const assetResult = d.assets ? ` 画像は${d.assets.saved}件を取得・内部保存し、失敗は${d.assets.failed}件でした。` : "";
       const runtimeDetail = d.runtimeVersion ? ` 実行版: ${d.runtimeVersion}` : "";
       setSyncFeedback({ type: "success", message: `${d.message ?? "同期しました"}。本文と更新時刻を反映しました。${assetResult}${warning}${runtimeDetail}` });
+      setSyncConfirmOpen(false);
     } catch {
       setSyncFeedback({ type: "error", message: "同期APIと通信できませんでした。ネットワークを確認し、時間をおいて1回だけ再試行してください。" });
     } finally {
@@ -866,7 +943,7 @@ export function WorkspaceClient({
     };
     let completed = 0;
     let savedCount = 0;
-    let lastRuntime = "36";
+    let lastRuntime = "37";
     const failures: string[] = [];
     for (const { slot, file } of assignments) {
       let uploadId = "";
@@ -1022,7 +1099,6 @@ export function WorkspaceClient({
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error);
       setSceneSource(null);
-      setLocalStoryEditing(false);
       setLocalStoryDraft("");
       setLocalStoryDirty(false);
       setLocalStoryFeedback("");
@@ -1050,58 +1126,122 @@ export function WorkspaceClient({
     }
   }
   function beginLocalStoryEdit() {
-    if (!sceneSource || !active || !editable || !editMode || localStorySaving) return;
-    setLocalStoryDraft(sceneSource.display_html ?? sceneSource.local_html ?? sceneSource.synced_html);
-    setLocalStoryDirty(false);
-    setLocalStoryFeedback("");
+    if (!sceneSource || !active || !editable || !editMode) return;
     setLocalStoryEditing(true);
+    setActiveEditorPane("left");
+    requestAnimationFrame(() => localStoryEditorRef.current?.focus({ preventScroll: true }));
   }
-  function cancelLocalStoryEdit() {
-    if (localStorySaving) return;
-    setLocalStoryEditing(false);
-    setLocalStoryDirty(false);
-    setLocalStoryFeedback("");
-  }
-  async function saveLocalStoryEdit() {
-    if (!active || !sceneSource || !editable || !editMode || localStorySaving) return;
-    const html = localStoryEditorRef.current?.innerHTML ?? localStoryDraft;
-    setLocalStorySaving(true);
-    setLocalStoryFeedback("game-canvas内へ保存中です…");
+  async function finishLocalStoryEdit() {
+    if (!active) return;
     try {
+      await flushLocalStory(active.id);
+      setLocalStoryEditing(false);
+    } catch {
+      setLocalStorySaveState("error");
+      setLocalStoryFeedback("保存できませんでした。本文は画面に保持されています。もう一度お試しください。");
+    }
+  }
+  function persistLocalStory(sceneId: string, markdown: string) {
+    const previous = localStorySaveChains.current.get(sceneId) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(async () => {
+      if (localStorySaved.current.get(sceneId) === markdown) return;
+      if (selectedSceneIdRef.current === sceneId) setLocalStorySaveState("saving");
       const response = await fetch(
-        `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(active.id)}/local`,
+        `/api/workspaces/${slug}/confluence/scenes/${encodeURIComponent(sceneId)}/local`,
         {
           method: "PATCH",
           headers: { "content-type": "application/json", "x-plotline-csrf": "confluence-local-edit" },
-          body: JSON.stringify({ html, baseRevision: sceneSource.local_revision ?? 0 }),
+          body: JSON.stringify({ markdown, baseRevision: localStoryRevisions.current.get(sceneId) ?? 0 }),
+          keepalive: true,
         },
       );
       const result = await response.json().catch(() => ({})) as {
-        error?: string; localHtml?: string; localRevision?: number; localUpdatedAt?: string; message?: string;
+        error?: string; code?: string; localMarkdown?: string; localRevision?: number; localUpdatedAt?: string; message?: string;
       };
-      if (!response.ok || typeof result.localHtml !== "string")
-        throw new Error(result.error ?? "ローカル編集を保存できませんでした。");
-      setSceneSource((previous) => previous ? {
-        ...previous,
-        local_html: result.localHtml!,
-        display_html: result.localHtml!,
-        local_revision: result.localRevision ?? (previous.local_revision ?? 0) + 1,
-        local_updated_at: result.localUpdatedAt ?? new Date().toISOString(),
-        has_local_edit: true,
-      } : previous);
-      setLocalStoryDraft(result.localHtml);
-      setLocalStoryEditing(false);
-      setLocalStoryDirty(false);
-      setLocalStoryFeedback(result.message ?? "game-canvas内に保存しました。Confluenceには反映されません。");
-    } catch (caught) {
-      setLocalStoryFeedback(caught instanceof Error ? caught.message : "ローカル編集を保存できませんでした。");
-    } finally {
-      setLocalStorySaving(false);
-    }
+      if (!response.ok || typeof result.localMarkdown !== "string") {
+        if (selectedSceneIdRef.current === sceneId)
+          setLocalStorySaveState(result.code === "LOCAL_EDIT_CONFLICT" ? "conflict" : "error");
+        throw new Error(result.error ?? "ローカル本文を保存できませんでした。");
+      }
+      localStorySaved.current.set(sceneId, result.localMarkdown);
+      localStoryRevisions.current.set(sceneId, result.localRevision ?? (localStoryRevisions.current.get(sceneId) ?? 0) + 1);
+      if (selectedSceneIdRef.current === sceneId) {
+        const latest = localStoryDrafts.current.get(sceneId) ?? "";
+        setSceneSource((current) => current ? {
+          ...current,
+          local_markdown: result.localMarkdown!,
+          local_revision: localStoryRevisions.current.get(sceneId),
+          local_updated_at: result.localUpdatedAt ?? new Date().toISOString(),
+          has_local_edit: true,
+        } : current);
+        setLocalStoryDirty(latest !== result.localMarkdown);
+        setLocalStorySaveState(latest === result.localMarkdown ? "saved" : "dirty");
+        setLocalStoryFeedback(result.message ?? "game-canvas内に保存しました。Confluenceには反映されません。");
+      }
+    }).catch((caught) => {
+      if (selectedSceneIdRef.current === sceneId)
+        setLocalStoryFeedback(caught instanceof Error ? caught.message : "ローカル本文を保存できませんでした。再試行できます。");
+      throw caught;
+    });
+    localStorySaveChains.current.set(sceneId, operation);
+    return operation;
   }
+  function scheduleLocalStorySave(sceneId: string, markdown: string) {
+    const oldTimer = localStoryTimers.current.get(sceneId);
+    if (oldTimer) clearTimeout(oldTimer);
+    const timer = setTimeout(() => {
+      localStoryTimers.current.delete(sceneId);
+      if (!localStoryComposing.current)
+        void persistLocalStory(sceneId, localStoryDrafts.current.get(sceneId) ?? markdown).catch(() => undefined);
+    }, 900);
+    localStoryTimers.current.set(sceneId, timer);
+  }
+  function updateLocalStory(markdown: string) {
+    if (!active || !editable || !editMode) return;
+    const normalized = markdown.replace(/\r\n?/g, "\n");
+    const history = localStoryHistories.get(active.id)
+      ?? createSceneHistory({ title: "", markdown: localStoryDraft });
+    setLocalStoryHistories((previous) => {
+      const next = new Map(previous);
+      next.set(active.id, recordSceneEdit(history, { title: "", markdown: normalized }, "confluence-markdown"));
+      return next;
+    });
+    localStoryDrafts.current.set(active.id, normalized);
+    setLocalStoryDraft(normalized);
+    setLocalStoryDirty(true);
+    setLocalStorySaveState("dirty");
+    setLocalStoryFeedback("");
+    setActiveEditorPane("left");
+    if (!localStoryComposing.current) scheduleLocalStorySave(active.id, normalized);
+  }
+  async function flushLocalStory(sceneId: string) {
+    const timer = localStoryTimers.current.get(sceneId);
+    if (timer) clearTimeout(timer);
+    localStoryTimers.current.delete(sceneId);
+    const markdown = localStoryDrafts.current.get(sceneId);
+    if (markdown != null && markdown !== localStorySaved.current.get(sceneId))
+      await persistLocalStory(sceneId, markdown);
+    else await (localStorySaveChains.current.get(sceneId) ?? Promise.resolve());
+  }
+  useEffect(() => {
+    const flushPending = () => {
+      for (const [sceneId, markdown] of localStoryDrafts.current) {
+        if (markdown !== localStorySaved.current.get(sceneId))
+          void persistLocalStory(sceneId, markdown).catch(() => undefined);
+      }
+    };
+    window.addEventListener("pagehide", flushPending);
+    window.addEventListener("beforeunload", flushPending);
+    return () => {
+      window.removeEventListener("pagehide", flushPending);
+      window.removeEventListener("beforeunload", flushPending);
+    };
+  // persistLocalStory intentionally reads the latest refs; rebinding listeners while typing would risk dropping a flush.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
   async function resetLocalStoryEdit() {
-    if (!active || !sceneSource?.has_local_edit || !editable || !editMode || localStorySaving) return;
-    setLocalStorySaving(true);
+    if (!active || !sceneSource?.has_local_edit || !editable || !editMode || localStorySaveState === "saving") return;
+    setLocalStorySaveState("saving");
     setLocalStoryFeedback("同期内容へ戻しています…");
     try {
       const response = await fetch(
@@ -1118,32 +1258,53 @@ export function WorkspaceClient({
       setSceneSource((previous) => previous ? {
         ...previous,
         local_html: null,
+        local_markdown: null,
         local_revision: 0,
         local_updated_at: null,
         display_html: result.syncedHtml!,
         has_local_edit: false,
       } : previous);
-      setLocalStoryDraft("");
-      setLocalStoryEditing(false);
+      const markdown = confluenceHtmlToMarkdown(result.syncedHtml);
+      setLocalStoryDraft(markdown);
+      localStoryDrafts.current.set(active.id, markdown);
+      localStorySaved.current.set(active.id, markdown);
+      localStoryRevisions.current.set(active.id, 0);
+      setLocalStoryHistories((previous) => new Map(previous).set(active.id, createSceneHistory({ title: "", markdown })));
       setLocalStoryDirty(false);
+      setLocalStorySaveState("saved");
       setLocalStoryResetOpen(false);
       setLocalStoryFeedback(result.message ?? "Confluenceから同期した本文へ戻しました。");
     } catch (caught) {
+      setLocalStorySaveState("error");
       setLocalStoryFeedback(caught instanceof Error ? caught.message : "同期内容へ戻せませんでした。");
-    } finally {
-      setLocalStorySaving(false);
     }
   }
   const activeHistory = active ? sceneHistories.get(active.id) : null;
-  const historyBlocked = saveState === "saving" || saveState === "conflict";
+  const activeLocalHistory = active ? localStoryHistories.get(active.id) : null;
+  const historyBlocked = activeEditorPane === "left"
+    ? localStorySaveState === "saving" || localStorySaveState === "conflict"
+    : saveState === "saving" || saveState === "conflict";
   const canUndo = Boolean(
-    editMode && editable && activeHistory?.past.length && !historyBlocked,
+    editMode && editable && (activeEditorPane === "left" ? activeLocalHistory?.past.length : activeHistory?.past.length) && !historyBlocked,
   );
   const canRedo = Boolean(
-    editMode && editable && activeHistory?.future.length && !historyBlocked,
+    editMode && editable && (activeEditorPane === "left" ? activeLocalHistory?.future.length : activeHistory?.future.length) && !historyBlocked,
   );
   const performUndo = useCallback(() => {
     if (!active || !editable || !editMode || historyBlocked) return false;
+    if (activeEditorPane === "left") {
+      const history = localStoryHistories.get(active.id);
+      if (!history) return false;
+      const next = undoSceneEdit(history);
+      if (!next) return false;
+      setLocalStoryHistories((previous) => new Map(previous).set(active.id, next));
+      localStoryDrafts.current.set(active.id, next.present.markdown);
+      setLocalStoryDraft(next.present.markdown);
+      setLocalStoryDirty(true);
+      setLocalStorySaveState("dirty");
+      scheduleLocalStorySave(active.id, next.present.markdown);
+      return true;
+    }
     const history = sceneHistories.get(active.id);
     if (!history) return false;
     const next = undoSceneEdit(history);
@@ -1155,9 +1316,24 @@ export function WorkspaceClient({
     });
     applySceneSnapshot(active.id, next.present);
     return true;
-  }, [active, applySceneSnapshot, editMode, editable, historyBlocked, sceneHistories]);
+  // scheduleLocalStorySave is a render-local helper that reads refs; including it would rebind this callback every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, activeEditorPane, applySceneSnapshot, editMode, editable, historyBlocked, localStoryHistories, sceneHistories]);
   const performRedo = useCallback(() => {
     if (!active || !editable || !editMode || historyBlocked) return false;
+    if (activeEditorPane === "left") {
+      const history = localStoryHistories.get(active.id);
+      if (!history) return false;
+      const next = redoSceneEdit(history);
+      if (!next) return false;
+      setLocalStoryHistories((previous) => new Map(previous).set(active.id, next));
+      localStoryDrafts.current.set(active.id, next.present.markdown);
+      setLocalStoryDraft(next.present.markdown);
+      setLocalStoryDirty(true);
+      setLocalStorySaveState("dirty");
+      scheduleLocalStorySave(active.id, next.present.markdown);
+      return true;
+    }
     const history = sceneHistories.get(active.id);
     if (!history) return false;
     const next = redoSceneEdit(history);
@@ -1169,21 +1345,18 @@ export function WorkspaceClient({
     });
     applySceneSnapshot(active.id, next.present);
     return true;
-  }, [active, applySceneSnapshot, editMode, editable, historyBlocked, sceneHistories]);
+  // scheduleLocalStorySave is a render-local helper that reads refs; including it would rebind this callback every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, activeEditorPane, applySceneSnapshot, editMode, editable, historyBlocked, localStoryHistories, sceneHistories]);
   useEffect(() => {
     function onHistoryShortcut(event: KeyboardEvent) {
-      if (!editMode || !editable || !event.ctrlKey || event.altKey) return;
+      if (!editMode || !editable || !event.ctrlKey || event.altKey || event.isComposing) return;
       const key = event.key.toLowerCase();
       const isUndo = key === "z" && !event.shiftKey;
       const isRedo = key === "y" || (key === "z" && event.shiftKey);
       if (!isUndo && !isRedo) return;
       const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        target.matches("input, textarea, [contenteditable='true']") &&
-        !target.closest("[data-scene-editor='true']")
-      )
-        return;
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true'], [role='textbox']")) return;
       event.preventDefault();
       if (isUndo) performUndo();
       else performRedo();
@@ -1198,14 +1371,15 @@ export function WorkspaceClient({
         ワークスペースを読み込んでいます
       </main>
     );
+  const focusedSaveState = activeEditorPane === "left" ? localStorySaveState : saveState;
   const status =
-    saveState === "saved"
+    focusedSaveState === "saved"
       ? "保存済み"
-      : saveState === "saving"
+      : focusedSaveState === "saving"
         ? "保存中…"
-        : saveState === "dirty"
+        : focusedSaveState === "dirty"
           ? "未保存"
-          : saveState === "conflict"
+          : focusedSaveState === "conflict"
             ? "競合あり"
             : "保存エラー";
   const confluenceStoryHtml = sceneSource?.display_html
@@ -1262,12 +1436,12 @@ export function WorkspaceClient({
             {online ? "接続中" : "オフライン"}
           </span>
           <span
-            className={`save-status save-${saveState}`}
+            className={`save-status save-${focusedSaveState}`}
             aria-live="polite"
           >
-            {saveState === "saved" ? (
+            {focusedSaveState === "saved" ? (
               <Check size={14} />
-            ) : saveState === "saving" ? (
+            ) : focusedSaveState === "saving" ? (
               <Loader2 size={14} className="spin" />
             ) : (
               <AlertCircle size={14} />
@@ -1279,12 +1453,16 @@ export function WorkspaceClient({
             <Switch
               checked={editMode && editable}
               onCheckedChange={(checked) => {
-                setEditMode(checked);
-                if (!checked) {
+                if (checked) return setEditMode(true);
+                if (!active) return setEditMode(false);
+                void flushLocalStory(active.id).then(() => {
                   setLocalStoryEditing(false);
-                  setLocalStoryDirty(false);
                   setLocalStoryResetOpen(false);
-                }
+                  setEditMode(false);
+                }).catch(() => {
+                  setLocalStorySaveState("error");
+                  setLocalStoryFeedback("保存に失敗したため閲覧モードへ切り替えていません。再試行してください。");
+                });
               }}
               disabled={!editable}
               aria-label="編集モード"
@@ -1302,7 +1480,7 @@ export function WorkspaceClient({
               場面を追加
             </Button>
           )}
-          <Badge variant="outline" className="runtime-badge">実行版:36</Badge>
+          <Badge variant="outline" className="runtime-badge">実行版:37</Badge>
           <Dialog open={displayNameOpen} onOpenChange={(open) => {
             if (displayNameSaving) return;
             setDisplayNameOpen(open);
@@ -1419,23 +1597,28 @@ export function WorkspaceClient({
                 </Badge>
               )}
               {sceneSource && editMode && editable && !localStoryEditing && (
-                <Button type="button" size="sm" variant="outline" onClick={beginLocalStoryEdit} disabled={localStorySaving}>
+                <Button type="button" size="sm" variant="outline" onClick={beginLocalStoryEdit} disabled={localStorySaveState === "saving"}>
                   <Pencil size={14} /> ローカル編集
                 </Button>
               )}
               {sceneSource && editMode && editable && localStoryEditing && (
                 <div className="local-story-actions" aria-label="Confluence本文のローカル編集操作">
-                  <Button type="button" size="sm" variant="ghost" onClick={cancelLocalStoryEdit} disabled={localStorySaving}>
-                    キャンセル
-                  </Button>
-                  <Button type="button" size="sm" onClick={() => void saveLocalStoryEdit()} disabled={localStorySaving || !localStoryDirty}>
-                    {localStorySaving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-                    {localStorySaving ? "保存中…" : "game-canvasへ保存"}
+                  <span className={`save-status save-${localStorySaveState}`} aria-live="polite">
+                    {localStorySaveState === "saving" ? <Loader2 size={14} className="spin" /> : localStorySaveState === "saved" ? <Check size={14} /> : <AlertCircle size={14} />}
+                    {localStorySaveState === "saving" ? "保存中…" : localStorySaveState === "saved" ? "保存済み" : localStorySaveState === "dirty" ? "未保存" : localStorySaveState === "conflict" ? "競合あり" : "保存失敗"}
+                  </span>
+                  {localStorySaveState === "error" && (
+                    <Button type="button" size="sm" variant="outline" onClick={() => active && void flushLocalStory(active.id)}>
+                      再試行
+                    </Button>
+                  )}
+                  <Button type="button" size="sm" variant="ghost" onClick={() => void finishLocalStoryEdit()} disabled={localStorySaveState === "saving"}>
+                    編集を終了
                   </Button>
                 </div>
               )}
               {sceneSource?.has_local_edit && editMode && editable && !localStoryEditing && (
-                <Button type="button" size="sm" variant="ghost" onClick={() => setLocalStoryResetOpen(true)} disabled={localStorySaving}>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setLocalStoryResetOpen(true)} disabled={localStorySaveState === "saving"}>
                   <RotateCcw size={14} /> 同期内容に戻す
                 </Button>
               )}
@@ -1447,7 +1630,7 @@ export function WorkspaceClient({
                 <Loader2 className="spin" />
                 <span>選択した場面のConfluence本文を読み込んでいます…</span>
               </div>
-            ) : confluenceStoryHtml ? (
+            ) : sceneSource ? (
               <>
                 {(localStoryEditing || sceneSource?.has_local_edit) && (
                   <p className="local-story-notice" role="status">
@@ -1457,23 +1640,24 @@ export function WorkspaceClient({
                   </p>
                 )}
                 {localStoryEditing ? (
-                  <div
-                    key={`${active?.id ?? "scene"}-${sceneSource?.local_revision ?? 0}`}
+                  <Textarea
                     ref={localStoryEditorRef}
-                    className="confluence-html local-story-editor"
-                    contentEditable
-                    suppressContentEditableWarning
-                    role="textbox"
-                    aria-multiline="true"
-                    aria-label="Confluence本文をgame-canvas内だけで編集"
-                    onInput={() => setLocalStoryDirty(true)}
-                    onPaste={(event) => {
-                      event.preventDefault();
-                      document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+                    className="local-story-editor"
+                    data-confluence-story-editor="true"
+                    value={localStoryDraft}
+                    onFocus={() => setActiveEditorPane("left")}
+                    onChange={(event) => updateLocalStory(event.target.value)}
+                    onCompositionStart={() => { localStoryComposing.current = true; }}
+                    onCompositionEnd={(event) => {
+                      localStoryComposing.current = false;
+                      updateLocalStory(event.currentTarget.value);
+                      if (active) scheduleLocalStorySave(active.id, event.currentTarget.value);
                     }}
-                    onDrop={(event) => event.preventDefault()}
-                    dangerouslySetInnerHTML={{ __html: localStoryDraft }}
+                    spellCheck
+                    aria-label="Confluence本文をgame-canvas内だけで編集"
                   />
+                ) : sceneSource.local_markdown != null ? (
+                  <MarkdownView markdown={sceneSource.local_markdown} />
                 ) : (
                   <div className="confluence-html" dangerouslySetInnerHTML={{ __html: confluenceStoryHtml }} />
                 )}
@@ -1501,7 +1685,7 @@ export function WorkspaceClient({
               </div>
             )}
           </div>
-          <AlertDialog open={localStoryResetOpen} onOpenChange={(open) => !localStorySaving && setLocalStoryResetOpen(open)}>
+          <AlertDialog open={localStoryResetOpen} onOpenChange={(open) => localStorySaveState !== "saving" && setLocalStoryResetOpen(open)}>
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>同期した本文へ戻しますか？</AlertDialogTitle>
@@ -1510,9 +1694,25 @@ export function WorkspaceClient({
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel disabled={localStorySaving}>キャンセル</AlertDialogCancel>
-                <AlertDialogAction onClick={(event) => { event.preventDefault(); void resetLocalStoryEdit(); }} disabled={localStorySaving}>
-                  {localStorySaving ? "処理中…" : "同期内容に戻す"}
+                <AlertDialogCancel disabled={localStorySaveState === "saving"}>キャンセル</AlertDialogCancel>
+                <AlertDialogAction onClick={(event) => { event.preventDefault(); void resetLocalStoryEdit(); }} disabled={localStorySaveState === "saving"}>
+                  {localStorySaveState === "saving" ? "処理中…" : "同期内容に戻す"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <AlertDialog open={syncConfirmOpen} onOpenChange={(open) => !syncing && setSyncConfirmOpen(open)}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Confluence本文で置き換えますか？</AlertDialogTitle>
+                <AlertDialogDescription>
+                  再同期すると、この場面のgame-canvas内の編集内容がConfluence本文で置き換わります。ほかの場面とConfluence原本は変更されません。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={syncing}>キャンセル</AlertDialogCancel>
+                <AlertDialogAction onClick={(event) => { event.preventDefault(); void performSync(true); }} disabled={syncing}>
+                  {syncing ? "同期中…" : "置き換えて再同期"}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -1534,8 +1734,16 @@ export function WorkspaceClient({
                   type="button"
                   className="scene-select-button"
                   onClick={() => {
-                    setSelectedId(s.id);
-                    setPageInput(s.confluence_page_url ?? "");
+                    const currentSceneId = active?.id;
+                    if (!currentSceneId || currentSceneId === s.id) return;
+                    void flushLocalStory(currentSceneId).then(() => {
+                      setLocalStoryEditing(false);
+                      setSelectedId(s.id);
+                      setPageInput(s.confluence_page_url ?? "");
+                    }).catch(() => {
+                      setLocalStorySaveState("error");
+                      setLocalStoryFeedback("保存に失敗したため場面を切り替えていません。再試行してください。");
+                    });
                   }}
                   aria-current={s.id === active?.id ? "true" : undefined}
                 >
@@ -1596,6 +1804,7 @@ export function WorkspaceClient({
                   <input
                     data-scene-editor="true"
                     value={active.title}
+                    onFocus={() => setActiveEditorPane("right")}
                     onChange={(e) => updateScene({ title: e.target.value })}
                     readOnly={!editMode || !editable}
                     aria-label="場面タイトル"
@@ -1701,7 +1910,7 @@ export function WorkspaceClient({
                             />
                             <div className="scene-confluence-actions">
                               <Button
-                                onClick={sync}
+                                onClick={requestSync}
                                 disabled={syncing || (!pageInput && !sceneSource?.page_id)}
                               >
                                 {syncing ? <Loader2 className="spin" /> : <RefreshCw />}
@@ -1853,6 +2062,13 @@ export function WorkspaceClient({
                     <Textarea
                       data-scene-editor="true"
                       value={active.markdown}
+                      onFocus={() => setActiveEditorPane("right")}
+                      onCompositionStart={() => { sceneComposing.current = true; }}
+                      onCompositionEnd={() => {
+                        sceneComposing.current = false;
+                        const latest = latestScenes.current.get(active.id);
+                        if (latest) scheduleSave(latest);
+                      }}
                       onChange={(e) =>
                         updateScene({ markdown: e.target.value })
                       }

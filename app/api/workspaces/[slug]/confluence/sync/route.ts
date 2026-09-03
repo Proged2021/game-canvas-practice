@@ -103,13 +103,16 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
   if (!auth.ok) return auth.response;
   let sceneId = new URL(request.url).searchParams.get("sceneId") ?? "";
   let input: string | undefined;
+  let replaceLocal = false;
   if (!checkOnly) {
     const body = (await request.json().catch(() => ({}))) as {
       sceneId?: string;
       page?: string;
+      replaceLocal?: boolean;
     };
     sceneId = body.sceneId ?? "";
     input = body.page;
+    replaceLocal = body.replaceLocal === true;
   }
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sceneId))
     return noStoreJson({ error: "対象場面が指定されていません。", code: "SCENE_REQUIRED", runtimeVersion: PLOTLINE_RUNTIME_VERSION }, { status: 400 });
@@ -171,10 +174,10 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
 
     const pageId = parsed.pageId;
     const localEdit = await db()
-      .prepare(`SELECT html,revision,updated_at FROM scene_confluence_local_edits
+      .prepare(`SELECT html,markdown,revision,updated_at FROM scene_confluence_local_edits
         WHERE workspace_id=?1 AND scene_id=?2 AND page_id=?3`)
       .bind(auth.membership.workspace_id, sceneId, pageId)
-      .first<{ html: string; revision: number; updated_at: string }>();
+      .first<{ html: string; markdown: string | null; revision: number; updated_at: string }>();
     let page: {
       id: string;
       title: string;
@@ -348,9 +351,10 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         .prepare("UPDATE confluence_connections SET attachment_scope_granted=1,last_error=NULL WHERE workspace_id=?1")
         .bind(auth.membership.workspace_id),
       database
-        .prepare("DELETE FROM scene_confluence_local_edits WHERE workspace_id=?1 AND scene_id=?2 AND page_id<>?3")
-        .bind(auth.membership.workspace_id, sceneId, pageId),
-      ...(generation && !localEdit ? [database
+        .prepare(`DELETE FROM scene_confluence_local_edits
+          WHERE workspace_id=?1 AND scene_id=?2 AND (page_id<>?3 OR ?4=1)`)
+        .bind(auth.membership.workspace_id, sceneId, pageId, replaceLocal ? 1 : 0),
+      ...(generation && (!localEdit || replaceLocal) ? [database
         .prepare("DELETE FROM scene_confluence_assets WHERE workspace_id=?1 AND scene_id=?2 AND provenance='automatic' AND generation<>?3")
         .bind(auth.membership.workspace_id, sceneId, generation)] : []),
     ];
@@ -370,11 +374,12 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
       last_synced_at: syncedAt,
       last_checked_at: syncedAt,
       last_error: null,
-      local_html: localEdit?.html ?? null,
-      local_revision: localEdit?.revision ?? 0,
-      local_updated_at: localEdit?.updated_at ?? null,
-      has_local_edit: Boolean(localEdit),
-      display_html: localEdit?.html ?? rendered.html,
+      local_html: replaceLocal ? null : localEdit?.html ?? null,
+      local_markdown: replaceLocal ? null : localEdit?.markdown ?? null,
+      local_revision: replaceLocal ? 0 : localEdit?.revision ?? 0,
+      local_updated_at: replaceLocal ? null : localEdit?.updated_at ?? null,
+      has_local_edit: !replaceLocal && Boolean(localEdit),
+      display_html: !replaceLocal && localEdit?.html ? localEdit.html : rendered.html,
     };
     const warnings = [
       ...(diagnosticWarnings.length

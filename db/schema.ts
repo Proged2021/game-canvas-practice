@@ -148,6 +148,7 @@ export const sceneConfluenceLocalEdits = sqliteTable(
     workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
     pageId: text("page_id").notNull(),
     html: text("html").notNull(),
+    markdown: text("markdown"),
     revision: integer("revision").notNull().default(1),
     updatedByAccountKey: text("updated_by_account_key").notNull(),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

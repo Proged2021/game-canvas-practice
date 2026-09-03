@@ -180,9 +180,9 @@ test("runtime35・no-storeとversion34以前の主要UIを保持する", async (
     read("components/workspace-client.tsx"), read("components/dashboard-client.tsx"),
     read("components/markdown-view.tsx"),
   ]);
-  assert.match(version, /"36"/);
+  assert.match(version, /"37"/);
   assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(workspace, /実行版:36/);
+  assert.match(workspace, /実行版:37/);
   assert.match(workspace, /restoreScene|自分の表示名|invite/i);
   assert.match(dashboard, /workspace-delete-button/);
   assert.match(markdown, /remarkPlotlineBreaks|remarkPlotlineCallouts/);
