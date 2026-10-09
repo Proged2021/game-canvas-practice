@@ -5,33 +5,72 @@ import { useState, type FormEvent } from "react";
 export default function Home() {
   const [isSignup, setIsSignup] = useState(false);
   const [message, setMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // フォームの入力を確認する
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (isSubmitting) return;
 
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") ?? "").trim();
 
-    if (isSignup) {
-      const displayName = String(
-        formData.get("displayName") ?? ""
-      ).trim();
-
-      if (displayName === "") {
-        setMessage(
-          "表示名を入力してください。空白だけでは登録できません。"
-        );
-        return;
-      }
-
-      setMessage(
-        `${displayName}さん、${email} の入力を確認しました。登録はまだ行っていません。`
-      );
-    } else {
+    // ログイン処理はまだ実装していない
+    if (!isSignup) {
       setMessage(
         `${email} の入力を確認しました。ログインはまだ行っていません。`
       );
+      return;
+    }
+
+    const displayName = String(
+      formData.get("displayName") ?? ""
+    ).trim();
+
+    if (displayName === "") {
+      setMessage(
+        "表示名を入力してください。空白だけでは登録できません。"
+      );
+      return;
+    }
+
+    setIsSubmitting(true);
+    setMessage("サーバーに確認しています…");
+
+    try {
+      // 練習用APIへ表示名だけ送る
+      const response = await fetch("/api/practice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ displayName }),
+      });
+
+      const result: unknown = await response.json();
+
+      // 返事が想定した形式か確認する
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("message" in result) ||
+        typeof result.message !== "string"
+      ) {
+        throw new Error("想定していない応答形式です。");
+      }
+
+      if (!response.ok) {
+        setMessage(`入力を確認してください：${result.message}`);
+        return;
+      }
+
+      setMessage(result.message);
+    } catch {
+      setMessage(
+        "通信または応答の読み取りに失敗しました。開発サーバーの状態を確認してください。"
+      );
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -44,7 +83,6 @@ export default function Home() {
         アトラシアン Confluence™からのシナリオ取り込みに対応予定です。
       </p>
 
-      {/* ログインカード */}
       <section className="auth-card">
         <h2>{isSignup ? "新規登録" : "ログイン"}</h2>
 
@@ -53,6 +91,7 @@ export default function Home() {
           className="email-login"
           onInput={() => setMessage("")}
           onSubmit={handleSubmit}
+          aria-busy={isSubmitting}
         >
           {isSignup && (
             <label>
@@ -62,6 +101,7 @@ export default function Home() {
                 name="displayName"
                 autoComplete="nickname"
                 required
+                disabled={isSubmitting}
               />
             </label>
           )}
@@ -73,6 +113,7 @@ export default function Home() {
             type="email"
             autoComplete="email"
             required
+            disabled={isSubmitting}
           />
 
           <label htmlFor="password">パスワード</label>
@@ -81,25 +122,31 @@ export default function Home() {
             type="password"
             autoComplete={isSignup ? "new-password" : "current-password"}
             required
+            disabled={isSubmitting}
           />
 
-          <button type="submit" className="login-button">
-            {isSignup
-              ? "メールアドレスで登録する"
-              : "メールアドレスでログイン"}
+          <button
+            type="submit"
+            className="login-button"
+            disabled={isSubmitting}
+          >
+            {isSubmitting
+              ? "確認中…"
+              : isSignup
+                ? "メールアドレスで登録する"
+                : "メールアドレスでログイン"}
           </button>
         </form>
 
-        {/* 入力チェック後のメッセージ */}
+        {/* 確認結果 */}
         <div role="status">
           {message && <p>{message}</p>}
         </div>
 
         <div className="auth-divider">または</div>
 
-        {/* 各サービスのアカウントでログイン */}
+        {/* 外部ログインは見た目のみ */}
         <div className="social-buttons">
-          {/* Googleで続行 */}
           <button type="button" className="gsi-material-button">
             <span className="gsi-material-button-state" />
             <span className="gsi-material-button-content-wrapper">
@@ -134,7 +181,6 @@ export default function Home() {
             </span>
           </button>
 
-          {/* Appleで続行 */}
           <button type="button" className="apple-signin-button">
             <img
               src="https://appleid.cdn-apple.com/appleid/button?type=continue&color=white&border=true&border_radius=50&width=375&height=56&scale=3&locale=ja_JP"
@@ -154,6 +200,7 @@ export default function Home() {
           </p>
           <button
             type="button"
+            disabled={isSubmitting}
             onClick={() => {
               setIsSignup(!isSignup);
               setMessage("");
