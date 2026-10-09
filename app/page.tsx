@@ -1,10 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 
 export default function Home() {
   const [isSignup, setIsSignup] = useState(false);
   const [message, setMessage] = useState("");
+
+  // フォームの入力を確認する
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const formData = new FormData(event.currentTarget);
+    const email = String(formData.get("email") ?? "").trim();
+
+    if (isSignup) {
+      const displayName = String(
+        formData.get("displayName") ?? ""
+      ).trim();
+
+      if (displayName === "") {
+        setMessage(
+          "表示名を入力してください。空白だけでは登録できません。"
+        );
+        return;
+      }
+
+      setMessage(
+        `${displayName}さん、${email} の入力を確認しました。登録はまだ行っていません。`
+      );
+    } else {
+      setMessage(
+        `${email} の入力を確認しました。ログインはまだ行っていません。`
+      );
+    }
+  }
 
   return (
     <main>
@@ -23,31 +52,7 @@ export default function Home() {
         <form
           className="email-login"
           onInput={() => setMessage("")}
-          onSubmit={(event) => {
-            event.preventDefault();
-
-            if (isSignup) {
-              const formData = new FormData(event.currentTarget);
-              const displayName = String(
-                formData.get("displayName") ?? ""
-              ).trim();
-
-              if (displayName === "") {
-                setMessage(
-                  "表示名を入力してください。空白だけでは登録できません。"
-                );
-                return;
-              }
-
-              setMessage(
-                `${displayName}さん、入力を確認しました。登録はまだ行っていません。`
-              );
-            } else {
-              setMessage(
-                "入力を確認しました。ログインはまだ行っていません。"
-              );
-            }
-          }}
+          onSubmit={handleSubmit}
         >
           {isSignup && (
             <label>
@@ -64,6 +69,7 @@ export default function Home() {
           <label htmlFor="email">メールアドレス</label>
           <input
             id="email"
+            name="email"
             type="email"
             autoComplete="email"
             required
