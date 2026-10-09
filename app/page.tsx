@@ -25,9 +25,28 @@ export default function Home() {
           onInput={() => setMessage("")}
           onSubmit={(event) => {
             event.preventDefault();
-            setMessage(
-              "入力を確認しました。登録・ログインはまだ行っていません。"
-            );
+
+            if (isSignup) {
+              const formData = new FormData(event.currentTarget);
+              const displayName = String(
+                formData.get("displayName") ?? ""
+              ).trim();
+
+              if (displayName === "") {
+                setMessage(
+                  "表示名を入力してください。空白だけでは登録できません。"
+                );
+                return;
+              }
+
+              setMessage(
+                `${displayName}さん、入力を確認しました。登録はまだ行っていません。`
+              );
+            } else {
+              setMessage(
+                "入力を確認しました。ログインはまだ行っていません。"
+              );
+            }
           }}
         >
           {isSignup && (
