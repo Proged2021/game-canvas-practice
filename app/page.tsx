@@ -46,9 +46,11 @@ export default function Home() {
   // 再送ボタンの待ち時間を減らす
   useEffect(() => {
     if (resendCooldown <= 0) return;
+
     const timer = window.setTimeout(() => {
       setResendCooldown((seconds) => Math.max(0, seconds - 1));
     }, 1000);
+
     return () => window.clearTimeout(timer);
   }, [resendCooldown]);
 
@@ -395,6 +397,18 @@ export default function Home() {
                   </button>
                 </form>
 
+                {/* ログイン時だけパスワード再設定への案内を表示する */}
+                {!isSignup && (
+                  <p style={{ textAlign: "center", margin: "24px 0" }}>
+                    <a
+                      href="/forgot-password"
+                      style={{ color: "#74716A" }}
+                    >
+                      パスワードを忘れた方
+                    </a>
+                  </p>
+                )}
+
                 <div className="auth-divider">または</div>
 
                 {/* 外部ログインは接続するまで無効にする */}
@@ -403,7 +417,11 @@ export default function Home() {
                     <span className="gsi-material-button-state" />
                     <span className="gsi-material-button-content-wrapper">
                       <span className="gsi-material-button-icon">
-                        <svg viewBox="0 0 48 48" style={{ display: "block" }} aria-hidden="true">
+                        <svg
+                          viewBox="0 0 48 48"
+                          style={{ display: "block" }}
+                          aria-hidden="true"
+                        >
                           <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
                           <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
                           <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
@@ -411,7 +429,9 @@ export default function Home() {
                           <path fill="none" d="M0 0h48v48H0z" />
                         </svg>
                       </span>
-                      <span className="gsi-material-button-contents">Sign in with Google</span>
+                      <span className="gsi-material-button-contents">
+                        Sign in with Google
+                      </span>
                     </span>
                   </button>
 
