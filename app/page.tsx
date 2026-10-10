@@ -8,6 +8,7 @@ export default function Home() {
   const [isSignup, setIsSignup] = useState(false);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [showLoginSuccess, setShowLoginSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResending, setIsResending] = useState(false);
   const [showVerification, setShowVerification] = useState(false);
@@ -46,11 +47,9 @@ export default function Home() {
   // 再送ボタンの待ち時間を減らす
   useEffect(() => {
     if (resendCooldown <= 0) return;
-
     const timer = window.setTimeout(() => {
       setResendCooldown((seconds) => Math.max(0, seconds - 1));
     }, 1000);
-
     return () => window.clearTimeout(timer);
   }, [resendCooldown]);
 
@@ -58,6 +57,7 @@ export default function Home() {
   function clearMessages() {
     setMessage("");
     setErrorMessage("");
+    setShowLoginSuccess(false);
   }
 
   // メールアドレスで登録・ログインする
@@ -134,7 +134,9 @@ export default function Home() {
         setErrorMessage("");
         setShowVerification(false);
         setVerificationEmail("");
-        setMessage("ログインしました。");
+
+        // 成功案内はログイン中の画面にだけ表示する
+        setShowLoginSuccess(true);
       }
 
       // 入力欄を空にし、ログイン状態を更新する
@@ -142,6 +144,7 @@ export default function Home() {
       await refetch();
     } catch {
       setMessage("");
+      setShowLoginSuccess(false);
       setErrorMessage(
         "処理結果を確認できませんでした。通信状態を確認してください。登録を試した場合は受信箱も確認してください。"
       );
@@ -259,6 +262,10 @@ export default function Home() {
 
             {session ? (
               <>
+                {/* ログイン状態がなくなれば、この案内も非表示になる */}
+                <div role="status">
+                  {showLoginSuccess && <p>ログインしました。</p>}
+                </div>
                 <p>表示名：{session.user.name}</p>
                 <p>メールアドレス：{session.user.email}</p>
                 {!session.user.emailVerified && (
@@ -400,10 +407,7 @@ export default function Home() {
                 {/* ログイン時だけパスワード再設定への案内を表示する */}
                 {!isSignup && (
                   <p style={{ textAlign: "center", margin: "24px 0" }}>
-                    <a
-                      href="/forgot-password"
-                      style={{ color: "#74716A" }}
-                    >
+                    <a href="/forgot-password" style={{ color: "#74716A" }}>
                       パスワードを忘れた方
                     </a>
                   </p>
