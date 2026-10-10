@@ -23,14 +23,17 @@ export default function PracticeNames() {
   const [names, setNames] = useState<PracticeName[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftName, setDraftName] = useState("");
 
+  const isBusy = isLoading || isSaving || isDeleting;
+
   // 保存済みの表示名を読み込む
   async function loadNames() {
-    if (isLoading || isSaving || editingId !== null) return;
+    if (isBusy || editingId !== null) return;
 
     setIsLoading(true);
     setError("");
@@ -69,7 +72,7 @@ export default function PracticeNames() {
 
   // 選んだ表示名の編集を始める
   function startEditing(name: PracticeName) {
-    if (isLoading || isSaving || editingId !== null) return;
+    if (isBusy || editingId !== null) return;
 
     setEditingId(name.id);
     setDraftName(name.displayName);
@@ -79,7 +82,7 @@ export default function PracticeNames() {
 
   // 保存せずに編集をやめる
   function cancelEditing() {
-    if (isSaving) return;
+    if (isBusy) return;
 
     setEditingId(null);
     setDraftName("");
@@ -90,7 +93,7 @@ export default function PracticeNames() {
   // 編集した表示名を保存する
   async function saveName(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (editingId === null || isSaving || isLoading) return;
+    if (editingId === null || isBusy) return;
 
     const id = editingId;
     const displayName = draftName.trim();
@@ -139,7 +142,7 @@ export default function PracticeNames() {
         throw new Error("変更結果の形式が正しくありません。");
       }
 
-      // 保存できた行だけ、画面の一覧も更新する
+      // 保存できた行だけ一覧を更新する
       const updatedName = result.name;
       setNames((current) =>
         current === null
@@ -161,6 +164,66 @@ export default function PracticeNames() {
     }
   }
 
+  // 確認後に、選んだデータを削除する
+  async function deleteName(name: PracticeName) {
+    if (isBusy || editingId !== null) return;
+
+    const confirmed = window.confirm(
+      `ID：${name.id} ／ 表示名：${name.displayName}\nこのデータを削除しますか？\n削除すると元に戻せません。`
+    );
+
+    // キャンセルした場合は何も変更しない
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/practice", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: name.id }),
+      });
+
+      const result: unknown = await response.json();
+
+      // APIからのメッセージを確認する
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("message" in result) ||
+        typeof result.message !== "string"
+      ) {
+        throw new Error("想定していない応答形式です。");
+      }
+
+      if (!response.ok) {
+        setError(result.message);
+        return;
+      }
+
+      // 削除されたIDが対象と一致するか確認する
+      if (!("id" in result) || result.id !== name.id) {
+        throw new Error("削除結果の形式が正しくありません。");
+      }
+
+      // 削除に成功した行だけ一覧から取り除く
+      setNames((current) =>
+        current === null
+          ? null
+          : current.filter((item) => item.id !== name.id)
+      );
+      setMessage(result.message);
+    } catch {
+      setError(
+        "削除結果を確認できませんでした。一覧を読み直して確認してください。"
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   return (
     <section className="auth-card" aria-labelledby="practice-title">
       <h2 id="practice-title">保存済みの表示名（練習用）</h2>
@@ -170,7 +233,7 @@ export default function PracticeNames() {
         type="button"
         className="login-button"
         onClick={loadNames}
-        disabled={isLoading || isSaving || editingId !== null}
+        disabled={isBusy || editingId !== null}
       >
         {isLoading ? "読み込み中…" : "保存済みの表示名を読み込む"}
       </button>
@@ -179,6 +242,7 @@ export default function PracticeNames() {
       <div role="status">
         {isLoading && <p>DBから読み込んでいます…</p>}
         {isSaving && <p>変更を保存しています…</p>}
+        {isDeleting && <p>削除しています…</p>}
         {message && <p>{message}</p>}
         {!isLoading && names !== null && (
           <p>
@@ -212,7 +276,7 @@ export default function PracticeNames() {
                         setError("");
                       }}
                       required
-                      disabled={isSaving}
+                      disabled={isBusy}
                       autoFocus
                     />
                   </label>
@@ -220,7 +284,7 @@ export default function PracticeNames() {
                   <button
                     type="submit"
                     className="login-button"
-                    disabled={isSaving}
+                    disabled={isBusy}
                   >
                     {isSaving ? "保存中…" : "変更を保存"}
                   </button>
@@ -228,7 +292,7 @@ export default function PracticeNames() {
                   <button
                     type="button"
                     onClick={cancelEditing}
-                    disabled={isSaving}
+                    disabled={isBusy}
                   >
                     キャンセル
                   </button>
@@ -241,11 +305,16 @@ export default function PracticeNames() {
                   <button
                     type="button"
                     onClick={() => startEditing(name)}
-                    disabled={
-                      isLoading || isSaving || editingId !== null
-                    }
+                    disabled={isBusy || editingId !== null}
                   >
                     変更
+                  </button>{" "}
+                  <button
+                    type="button"
+                    onClick={() => deleteName(name)}
+                    disabled={isBusy || editingId !== null}
+                  >
+                    削除
                   </button>
                 </>
               )}

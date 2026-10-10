@@ -170,3 +170,72 @@ export async function PATCH(request: Request) {
     );
   }
 }
+
+// 指定したIDのデータを削除する（ローカル練習用）
+export async function DELETE(request: Request) {
+  let body: unknown;
+
+  // 送信データを読み取る
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json(
+      { message: "送信データの形式が正しくありません。" },
+      { status: 400 }
+    );
+  }
+
+  // IDの型を確認する
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    !("id" in body) ||
+    typeof body.id !== "number"
+  ) {
+    return Response.json(
+      { message: "IDを数値で送ってください。" },
+      { status: 400 }
+    );
+  }
+
+  const id = body.id;
+
+  // 不正なIDを拒否する
+  if (!Number.isSafeInteger(id) || id < 1) {
+    return Response.json(
+      { message: "IDは1以上の整数で指定してください。" },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const db = getDb();
+
+    // IDが一致する行だけ削除する
+    const deletedNames = await db
+      .delete(practiceNames)
+      .where(eq(practiceNames.id, id))
+      .returning({ id: practiceNames.id });
+
+    // 対象がなければエラーを返す
+    if (deletedNames.length === 0) {
+      return Response.json(
+        { message: "指定したIDのデータが見つかりません。" },
+        { status: 404 }
+      );
+    }
+
+    // 削除結果を返す
+    return Response.json({
+      message: `ID：${id} のデータを削除しました。`,
+      id: deletedNames[0].id,
+    });
+  } catch (error) {
+    console.error("表示名の削除に失敗しました。", error);
+
+    return Response.json(
+      { message: "表示名を削除できませんでした。" },
+      { status: 500 }
+    );
+  }
+}
