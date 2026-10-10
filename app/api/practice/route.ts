@@ -60,3 +60,28 @@ export async function POST(request: Request) {
     { status: 201 }
   );
 }
+
+// 保存済みの表示名を読み出す（ローカル練習用）
+// ID順に最大100件読み出す」処理
+export async function GET() {
+  try {
+    const db = getDb();
+    const names = await db
+      .select()
+      .from(practiceNames)
+      .orderBy(practiceNames.id)
+      .limit(100);
+
+    return Response.json(
+      { names },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  } catch (error) {
+    console.error("表示名の読み出しに失敗しました。", error);
+
+    return Response.json(
+      { message: "表示名を読み出せませんでした。" },
+      { status: 500 }
+    );
+  }
+}

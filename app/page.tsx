@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import PracticeNames from "./components/practice-names";
 
 export default function Home() {
   const [isSignup, setIsSignup] = useState(false);
@@ -60,7 +61,7 @@ export default function Home() {
       }
 
       if (!response.ok) {
-        setMessage(`入力を確認してください：${result.message}`);
+        setMessage(`処理に失敗しました：${result.message}`);
         return;
       }
 
@@ -210,6 +211,9 @@ export default function Home() {
           </button>
         </div>
       </section>
+
+      {/* 保存済みの表示名一覧（ローカル練習用） */}
+      <PracticeNames />
     </main>
   );
 }
