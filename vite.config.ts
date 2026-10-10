@@ -26,14 +26,23 @@ export default defineConfig(async () => {
     },
     plugins: [
       vinext(),
-      // Keep the official Sites build output; local sign-in is disabled.
       sites({ mockAuth: false }),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
+        persistState: { path: ".wrangler/state" },
         config: {
           main: "./build/sites-worker.ts",
           compatibility_flags: ["nodejs_compat"],
+          d1_databases: [
+            {
+              binding: "DB",
+              database_name: "game-canvas-practice-local",
+              // ローカル練習用の仮ID。本番DBのIDではない。
+              database_id: "00000000-0000-0000-0000-000000000001",
+              remote: false,
+            },
+          ],
         },
       }),
     ],

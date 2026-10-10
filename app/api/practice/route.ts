@@ -1,3 +1,6 @@
+import { getDb } from "@/app/db";
+import { practiceNames } from "@/app/db/schema";
+
 export async function POST(request: Request) {
   let body: unknown;
 
@@ -34,8 +37,26 @@ export async function POST(request: Request) {
     );
   }
 
-  // 確認結果を返す（登録や保存はしない）
-  return Response.json({
-    message: `${displayName}さん、サーバーで入力を確認しました。登録はまだ行っていません。`,
-  });
+  // 表示名を練習用テーブルへ保存する
+  try {
+    const db = getDb();
+    // insert(practiceNames)：練習用テーブルに新しい行を追加する
+    // values({ displayName })：保存する表示名を指定する
+    // await：保存が終わるまで待つ
+    await db.insert(practiceNames).values({ displayName });
+  } catch (error) {
+    console.error("表示名の保存に失敗しました。", error);
+
+    return Response.json(
+      { message: "保存に失敗しました。開発サーバーのログを確認してください。" },
+      { status: 500 }
+    );
+  }
+
+  return Response.json(
+    {
+      message: `${displayName}さんの表示名を保存しました。アカウント登録はまだ行っていません。`,
+    },
+    { status: 201 }
+  );
 }
