@@ -239,3 +239,10 @@ main > p {
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* ログイン・登録のメッセージ */
+.auth-message {
+  color: #b42318;
+  margin: 0 0 16px;
+  font-size: 14px;
+}
