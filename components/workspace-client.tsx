@@ -182,6 +182,22 @@ type ManualImageUploadResult = {
     display_html?: string;
   };
 };
+type ConfluenceImageImportOptions = {
+  connections: Array<{ slug: string; name: string; current: boolean }>;
+  scenes: Array<{ id: string; title: string; pageUrl: string }>;
+};
+type ConfluenceImageImportProgress = {
+  active: boolean;
+  stopRequested: boolean;
+  completed: number;
+  total: number;
+  saved: number;
+  alreadySaved: number;
+  failed: number;
+  unmatched: number;
+  message: string;
+  errors: string[];
+};
 type DeletedScene = {
   id: string;
   title: string;
@@ -316,6 +332,17 @@ export function WorkspaceClient({
     total: number;
     message: string;
   }>({ active: false, completed: 0, total: 0, message: "" });
+  const [imageImportOptions, setImageImportOptions] = useState<ConfluenceImageImportOptions | null>(null);
+  const [imageImportOptionsLoading, setImageImportOptionsLoading] = useState(false);
+  const [imageImportOptionsError, setImageImportOptionsError] = useState("");
+  const [imageImportConnection, setImageImportConnection] = useState("");
+  const [imageImportScope, setImageImportScope] = useState<"all" | "current">("all");
+  const [imageImport, setImageImport] = useState<ConfluenceImageImportProgress>({
+    active: false, stopRequested: false, completed: 0, total: 0,
+    saved: 0, alreadySaved: 0, failed: 0, unmatched: 0, message: "", errors: [],
+  });
+  const imageImportInFlight = useRef(false);
+  const imageImportStopRequested = useRef(false);
   const [manualDragActive, setManualDragActive] = useState(false);
   const preferredPasteSlot = useRef<string>("");
   const [confluenceStatus, setConfluenceStatus] = useState<ConfluenceStatus | null>(null);
@@ -366,6 +393,35 @@ export function WorkspaceClient({
     selectedSceneIdRef.current = active?.id ?? "";
   }, [active?.id]);
   const editable = data?.workspace.role !== "viewer";
+  const loadImageImportOptions = useCallback(async (signal?: AbortSignal) => {
+    setImageImportOptionsLoading(true);
+    setImageImportOptionsError("");
+    setImageImportOptions(null);
+    try {
+      const response = await fetch(`/api/workspaces/${slug}/confluence/images/import`, { cache: "no-store", signal });
+      const result = await response.json().catch(() => ({})) as Partial<ConfluenceImageImportOptions> & { error?: string; nextAction?: string };
+      if (!response.ok) throw new Error([result.error ?? "画像の取得先を読み込めませんでした。", result.nextAction].filter(Boolean).join(" "));
+      if (!Array.isArray(result.connections) || !Array.isArray(result.scenes)) throw new Error("画像の取得先を読み込めませんでした。もう一度お試しください。");
+      if (signal?.aborted) return;
+      const options = { connections: result.connections, scenes: result.scenes };
+      setImageImportOptions(options);
+      setImageImportConnection((previous) => options.connections.some((connection) => connection.slug === previous)
+        ? previous
+        : (options.connections.find((connection) => connection.current) ?? options.connections[0])?.slug ?? "");
+    } catch (reason) {
+      if (!signal?.aborted) setImageImportOptionsError(reason instanceof Error ? reason.message : "画像の取得先を読み込めませんでした。");
+    } finally {
+      if (!signal?.aborted) setImageImportOptionsLoading(false);
+    }
+  }, [slug]);
+  useEffect(() => {
+    if (!confluenceDialogOpen || !editable) return;
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Reopening the dialog must reload its server-authorized connections and scene list.
+    void loadImageImportOptions(controller.signal);
+    return () => controller.abort();
+  }, [confluenceDialogOpen, editable, loadImageImportOptions]);
+  useEffect(() => () => { imageImportStopRequested.current = true; }, []);
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/workspaces/${slug}`, { cache: "no-store" });
@@ -922,6 +978,7 @@ export function WorkspaceClient({
     await load();
   }
   function requestSync() {
+    if (imageImportInFlight.current) return;
     if (sceneSource?.has_local_edit || localStoryDirty) {
       setSyncConfirmOpen(true);
       return;
@@ -929,7 +986,7 @@ export function WorkspaceClient({
     void performSync(false);
   }
   async function performSync(replaceLocal: boolean) {
-    if (syncing || !active) return;
+    if (syncing || imageImportInFlight.current || !active) return;
     setSyncing(true);
     setSyncFeedback({ type: "progress", message: "Confluenceを同期中です…" });
     try {
@@ -1070,7 +1127,7 @@ export function WorkspaceClient({
     } : previous);
   }
   async function uploadManualImages(assignments: Array<{ slot: ManualImageSlot; file: File }>) {
-    if (!active || manualUpload.active || !assignments.length) return;
+    if (!active || manualUpload.active || imageImportInFlight.current || !assignments.length) return;
     const uploadSceneId = active.id;
     if (localStoryDirty || localStorySaveState === "saving") {
       try {
@@ -1200,8 +1257,111 @@ export function WorkspaceClient({
     }
   }
 
+  async function importConfluenceImages() {
+    if (imageImportInFlight.current || syncing || manualUpload.active || !editable || !imageImportOptions || !imageImportConnection) return;
+    const targets = imageImportScope === "all"
+      ? imageImportOptions.scenes
+      : imageImportOptions.scenes.filter((scene) => scene.id === active?.id);
+    if (!targets.length) return;
+    imageImportInFlight.current = true;
+    imageImportStopRequested.current = false;
+    const progress: ConfluenceImageImportProgress = {
+      active: true, stopRequested: false, completed: 0, total: targets.length,
+      saved: 0, alreadySaved: 0, failed: 0, unmatched: 0,
+      message: "編集中の本文を保存しています…", errors: [],
+    };
+    const publish = () => setImageImport({ ...progress, errors: [...progress.errors], stopRequested: imageImportStopRequested.current });
+    publish();
+    const attempted = new Set<string>();
+    let stopped = false;
+    let preparationFailed = false;
+    const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    try {
+      if (localStoryComposing.current) throw new Error("本文の文字入力を確定してから、もう一度お試しください。");
+      for (const scene of targets) await flushLocalStory(scene.id);
+      for (const scene of targets) {
+        if (imageImportStopRequested.current) { stopped = true; break; }
+        progress.message = `${progress.total}場面中${progress.completed + 1}場面目「${scene.title || "無題"}」の画像を取得しています…`;
+        publish();
+        attempted.add(scene.id);
+        try {
+          const response = await fetch(`/api/workspaces/${slug}/confluence/images/import`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-plotline-csrf": "import-confluence-images" },
+            body: JSON.stringify({ sceneId: scene.id, connectionSlug: imageImportConnection }),
+          });
+          const result = await response.json().catch(() => ({})) as {
+            saved?: number; alreadySaved?: number; failed?: number; unmatched?: number; rateLimited?: boolean; error?: string; nextAction?: string;
+          };
+          if (response.ok && ![result.saved, result.alreadySaved, result.failed, result.unmatched].some((value) => typeof value === "number" && Number.isFinite(value)))
+            throw new Error("取得結果を確認できませんでした。再実行すると保存済みの画像を除いて取得します。");
+          progress.saved += count(result.saved);
+          progress.alreadySaved += count(result.alreadySaved);
+          progress.failed += count(result.failed);
+          progress.unmatched += count(result.unmatched);
+          if (!response.ok || result.error || count(result.failed) || count(result.unmatched)) {
+            const details = [result.error, result.nextAction].filter(Boolean).join(" ")
+              || (response.ok ? `取得失敗${count(result.failed)}件、配置先が見つからない画像${count(result.unmatched)}件。` : "画像を取得できませんでした。再試行できます。");
+            progress.errors.push(`「${scene.title || "無題"}」: ${details}`);
+          }
+          progress.completed += 1;
+          if (response.status === 429 || result.rateLimited) {
+            stopped = true;
+            progress.errors.push("取得先へのアクセスが集中したため、続きの場面は処理せず停止しました。時間をおいて再実行してください。");
+            break;
+          }
+        } catch (reason) {
+          progress.completed += 1;
+          progress.errors.push(`「${scene.title || "無題"}」: ${reason instanceof Error && reason.message.startsWith("取得結果") ? reason.message : "通信できませんでした。ネットワークを確認して再実行してください。"}`);
+        }
+        publish();
+      }
+      stopped ||= imageImportStopRequested.current && progress.completed < progress.total;
+    } catch (reason) {
+      preparationFailed = true;
+      progress.errors.push(reason instanceof Error ? reason.message : "本文を保存できませんでした。");
+    } finally {
+      const sceneId = selectedSceneIdRef.current;
+      if (attempted.has(sceneId)) {
+        try {
+          const refreshed = await loadManualImageContext(sceneId);
+          if (selectedSceneIdRef.current === sceneId && refreshed.source) {
+            const draft = localStoryDrafts.current.get(sceneId);
+            const dirty = draft != null && draft !== localStorySaved.current.get(sceneId);
+            const markdown = dirty
+              ? rewriteLocalMarkdownImageSources(draft, refreshed.slots)
+              : refreshed.source.local_markdown ?? confluenceHtmlToMarkdown(refreshed.source.local_html ?? refreshed.source.synced_html);
+            localStoryDrafts.current.set(sceneId, markdown);
+            localStoryRevisions.current.set(sceneId, refreshed.source.local_revision ?? 0);
+            setLocalStoryDraft(markdown);
+            setLocalStoryDirty(dirty);
+            if (dirty) scheduleLocalStorySave(sceneId, markdown);
+            else {
+              localStorySaved.current.set(sceneId, markdown);
+              setLocalStorySaveState("saved");
+            }
+          }
+        } catch (reason) {
+          progress.errors.push(`表示の更新: ${reason instanceof Error ? reason.message : "画像一覧を更新できませんでした。"}`);
+        }
+      }
+      progress.active = false;
+      progress.message = preparationFailed
+        ? "本文の保存を確認できないため、画像取得を開始しませんでした。"
+        : stopped
+          ? `一括取得を停止しました。${progress.total}場面中${progress.completed}場面を処理しました。取得済みの画像は保存されています。`
+          : `${progress.completed}場面の画像取得が完了しました。${progress.errors.length ? "取得できなかった画像は、時間をおいて再実行できます。" : ""}`;
+      imageImportInFlight.current = false;
+      publish();
+    }
+  }
+  function stopConfluenceImageImport() {
+    imageImportStopRequested.current = true;
+    setImageImport((previous) => ({ ...previous, stopRequested: true, message: "停止を予約しました。処理中の場面が終わると停止します。" }));
+  }
+
   async function addLocalStoryImage(file: File) {
-    if (!active || manualUpload.active) return;
+    if (!active || manualUpload.active || imageImportInFlight.current) return;
     const extension = normalizedUploadName(file.name).split(".").at(-1) ?? "";
     const accepted: Record<string, string[]> = {
       "image/png": ["png"], "image/jpeg": ["jpg", "jpeg"], "image/gif": ["gif"], "image/webp": ["webp"],
@@ -1260,7 +1420,7 @@ export function WorkspaceClient({
   }
 
   async function removeLocalStoryImage(image: LocalMarkdownImage) {
-    if (!active || manualUpload.active) return;
+    if (!active || manualUpload.active || imageImportInFlight.current) return;
     const sceneId = active.id;
     const markdown = removeLocalMarkdownImage(localStoryDraft, image);
     updateLocalStory(markdown);
@@ -1328,7 +1488,7 @@ export function WorkspaceClient({
     void uploadManualImages([{ slot, file }]);
   }
   async function unlinkConfluenceSource() {
-    if (!active || syncing) return;
+    if (!active || syncing || imageImportInFlight.current) return;
     setSyncing(true);
     setSyncFeedback({ type: "progress", message: "この場面との関連付けを解除しています…" });
     try {
@@ -2173,7 +2333,7 @@ export function WorkspaceClient({
                     <Dialog
                       open={confluenceDialogOpen}
                       onOpenChange={(open) => {
-                        if (!syncing) {
+                        if (!syncing && !imageImportInFlight.current) {
                           setConfluenceDialogOpen(open);
                           if (open && active) void refreshManualImageSlots(active.id);
                         }
@@ -2260,7 +2420,7 @@ export function WorkspaceClient({
                             <div className="scene-confluence-actions">
                               <Button
                                 onClick={requestSync}
-                                disabled={syncing || (!pageInput && !sceneSource?.page_id)}
+                                disabled={syncing || imageImport.active || (!pageInput && !sceneSource?.page_id)}
                               >
                                 {syncing ? <Loader2 className="spin" /> : <RefreshCw />}
                                 {syncing ? "同期中…" : "同期する"}
@@ -2270,7 +2430,7 @@ export function WorkspaceClient({
                                   type="button"
                                   variant="outline"
                                   onClick={unlinkConfluenceSource}
-                                  disabled={syncing}
+                                  disabled={syncing || imageImport.active}
                                 >
                                   関連付けを解除
                                 </Button>
@@ -2301,6 +2461,82 @@ export function WorkspaceClient({
                             )}
                           </>
                         )}
+                        <section className="confluence-image-import" aria-labelledby="confluence-image-import-title" aria-busy={imageImport.active || imageImportOptionsLoading}>
+                          <div>
+                            <h4 id="confluence-image-import-title">Confluenceから画像を一括取得</h4>
+                            <p>リンク済みの場面で欠けている画像を、本文内の元の位置へ追加します。本文と保存済みの画像は保持されます。</p>
+                          </div>
+                          {imageImportOptionsLoading ? (
+                            <p className="confluence-image-import-note" role="status"><Loader2 size={15} className="spin" />接続先と場面を読み込んでいます…</p>
+                          ) : imageImportOptionsError ? (
+                            <>
+                              <p className="form-error" role="alert">{imageImportOptionsError}</p>
+                              <Button type="button" variant="outline" onClick={() => void loadImageImportOptions()} disabled={imageImport.active}>
+                                <RefreshCw size={15} />取得先を再読み込み
+                              </Button>
+                            </>
+                          ) : imageImportOptions && (
+                            <>
+                              {imageImportOptions.connections.length ? (
+                                <div className="confluence-image-import-fields">
+                                  <div>
+                                    <label htmlFor="confluence-image-import-connection">Confluenceの接続先</label>
+                                    <Select value={imageImportConnection} onValueChange={setImageImportConnection} disabled={imageImport.active || syncing || manualUpload.active}>
+                                      <SelectTrigger id="confluence-image-import-connection"><SelectValue placeholder="接続先を選ぶ" /></SelectTrigger>
+                                      <SelectContent>
+                                        {imageImportOptions.connections.map((connection) => (
+                                          <SelectItem key={connection.slug} value={connection.slug}>{connection.name}{connection.current ? "（このワークスペース）" : ""}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div>
+                                    <label htmlFor="confluence-image-import-scope">画像を追加する範囲</label>
+                                    <Select value={imageImportScope} onValueChange={(value) => setImageImportScope(value === "current" ? "current" : "all")} disabled={imageImport.active || syncing || manualUpload.active}>
+                                      <SelectTrigger id="confluence-image-import-scope"><SelectValue /></SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="all">ワークスペースの全場面（{imageImportOptions.scenes.length}場面）</SelectItem>
+                                        <SelectItem value="current" disabled={!imageImportOptions.scenes.some((scene) => scene.id === active.id)}>この場面</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="confluence-image-import-note">利用できるConfluence接続がありません。このワークスペースを接続するか、接続済みワークスペースのオーナーのアカウントでお試しください。</p>
+                              )}
+                              {!imageImportOptions.scenes.length && <p className="confluence-image-import-note">先に場面へConfluenceページを設定してください。</p>}
+                              <div className="scene-confluence-actions">
+                                <Button
+                                  type="button"
+                                  onClick={() => void importConfluenceImages()}
+                                  disabled={imageImport.active || syncing || manualUpload.active || sourceLoading || !imageImportConnection || !imageImportOptions.scenes.length || (imageImportScope === "current" && !imageImportOptions.scenes.some((scene) => scene.id === active.id))}
+                                >
+                                  {imageImport.active ? <Loader2 size={15} className="spin" /> : <ImageIcon size={15} />}
+                                  {imageImport.active ? "画像を取得中…" : "画像を一括取得"}
+                                </Button>
+                                {imageImport.active && (
+                                  <Button type="button" variant="outline" onClick={stopConfluenceImageImport} disabled={imageImport.stopRequested}>
+                                    {imageImport.stopRequested ? "この場面の完了後に停止" : "停止する"}
+                                  </Button>
+                                )}
+                              </div>
+                              {manualUpload.active && <p className="confluence-image-import-note">画像の保存が終わると、一括取得を開始できます。</p>}
+                            </>
+                          )}
+                          {imageImport.message && (
+                            <div className="confluence-image-import-result" role="status" aria-live="polite">
+                              <p>{imageImport.message}</p>
+                              {imageImport.total > 0 && <progress max={imageImport.total} value={imageImport.completed} aria-label={`${imageImport.total}場面中${imageImport.completed}場面を処理`} />}
+                              <p>画像: 取得 {imageImport.saved}件・保存済み {imageImport.alreadySaved}件・取得失敗 {imageImport.failed}件・未配置 {imageImport.unmatched}件</p>
+                            </div>
+                          )}
+                          {imageImport.errors.length > 0 && (
+                            <details className="confluence-image-import-errors">
+                              <summary>確認が必要な内容（{imageImport.errors.length}件）</summary>
+                              <ul>{imageImport.errors.map((message, index) => <li key={`${index}-${message}`}>{message}</li>)}</ul>
+                            </details>
+                          )}
+                        </section>
                         {sceneSource && (
                           <section
                             className={`manual-image-import${manualDragActive ? " is-dragging" : ""}`}
@@ -2323,7 +2559,7 @@ export function WorkspaceClient({
                                 <h4 id="manual-image-import-title">別の方法で画像を追加</h4>
                                 <p>Confluence画像をまとめて選ぶか、この欄へドラッグ＆ドロップしてください。ファイル名が一致する場所へ自動で割り当てます。</p>
                               </div>
-                              <Button asChild type="button" variant="outline" disabled={manualUpload.active || !manualSlots.length}>
+                              <Button asChild type="button" variant="outline" disabled={manualUpload.active || imageImport.active || !manualSlots.length}>
                                 <label htmlFor="manual-confluence-images">
                                   <Upload size={15} />画像をまとめて選ぶ
                                 </label>
@@ -2334,7 +2570,7 @@ export function WorkspaceClient({
                                 type="file"
                                 accept="image/png,image/jpeg,image/gif,image/webp"
                                 multiple
-                                disabled={manualUpload.active}
+                                disabled={manualUpload.active || imageImport.active}
                                 onChange={(event) => {
                                   assignSelectedFiles([...(event.currentTarget.files ?? [])]);
                                   event.currentTarget.value = "";
@@ -2368,7 +2604,7 @@ export function WorkspaceClient({
                                       {slot.error && <small>{slot.error}</small>}
                                     </div>
                                     <div className="manual-image-actions">
-                                      <Button asChild type="button" size="sm" variant="outline" disabled={manualUpload.active}>
+                                      <Button asChild type="button" size="sm" variant="outline" disabled={manualUpload.active || imageImport.active}>
                                         <label htmlFor={`manual-slot-${slot.slotKey}`}>
                                           {slot.status === "saved" ? "選び直す" : "ファイルを選ぶ"}
                                         </label>
@@ -2378,7 +2614,7 @@ export function WorkspaceClient({
                                         className="visually-hidden"
                                         type="file"
                                         accept="image/png,image/jpeg,image/gif,image/webp"
-                                        disabled={manualUpload.active}
+                                        disabled={manualUpload.active || imageImport.active}
                                         onChange={(event) => {
                                           const file = event.currentTarget.files?.[0];
                                           if (file) void uploadManualImages([{ slot, file }]);
@@ -2389,7 +2625,7 @@ export function WorkspaceClient({
                                         type="button"
                                         size="sm"
                                         variant="ghost"
-                                        disabled={manualUpload.active}
+                                        disabled={manualUpload.active || imageImport.active}
                                         onFocus={() => { preferredPasteSlot.current = slot.slotKey; }}
                                         onClick={() => void pasteFromClipboard(slot)}
                                         aria-label={`${slot.label}へクリップボード画像を貼り付け`}

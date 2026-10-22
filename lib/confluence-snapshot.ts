@@ -51,12 +51,45 @@ function referenceKeys(reference: ConfluenceImageReference, pageId: string) {
   ].filter(Boolean);
 }
 
+function sharesStrongIdentity(first: ConfluenceImageReference, second: ConfluenceImageReference) {
+  return Boolean((first.attachmentId && first.attachmentId === second.attachmentId)
+    || (first.fileId && first.fileId === second.fileId)
+    || (first.attachmentId && first.attachmentId === second.fileId)
+    || (first.fileId && first.fileId === second.attachmentId));
+}
+
+function conflictingStrongIdentities(first: ConfluenceImageReference, second: ConfluenceImageReference) {
+  if (sharesStrongIdentity(first, second)) return false;
+  return Boolean((first.attachmentId && second.attachmentId && first.attachmentId !== second.attachmentId)
+    || (first.fileId && second.fileId && first.fileId !== second.fileId));
+}
+
+function hasStrongIdentity(reference: ConfluenceImageReference) {
+  return Boolean(reference.attachmentId || reference.fileId);
+}
+
 export function dedupeConfluenceImageReferences(pageId: string, representations: ConfluenceImageReference[][]) {
   const groups: Array<LogicalConfluenceImage & { keys: Set<string> }> = [];
-  for (const reference of representations.flat()) {
+  const references = representations.flat();
+  const weakKeyReferences = new Map<string, ConfluenceImageReference[]>();
+  for (const reference of references) {
+    if (!hasStrongIdentity(reference)) continue;
+    for (const key of referenceKeys(reference, pageId).filter((value) => /^(?:filename|path):/.test(value))) {
+      const previous = weakKeyReferences.get(key) ?? [];
+      previous.push(reference);
+      weakKeyReferences.set(key, previous);
+    }
+  }
+  const ambiguousWeakKeys = new Set([...weakKeyReferences].filter(([, values]) =>
+    values.some((first, index) => values.slice(index + 1).some((second) => conflictingStrongIdentities(first, second))))
+    .map(([key]) => key));
+  for (const reference of references) {
     const keys = referenceKeys(reference, pageId);
     if (!keys.length) continue;
-    let group = groups.find((candidate) => keys.some((key) => candidate.keys.has(key)));
+    let group = groups.find((candidate) => sharesStrongIdentity(candidate, reference))
+      ?? groups.find((candidate) => !conflictingStrongIdentities(candidate, reference)
+        && keys.some((key) => candidate.keys.has(key)
+          && (!ambiguousWeakKeys.has(key) || (!hasStrongIdentity(candidate) && !hasStrongIdentity(reference)))));
     if (!group) {
       group = { ...reference, sourceUrls: [], keys: new Set() };
       groups.push(group);
@@ -86,10 +119,15 @@ function names(item: ConfluenceAttachmentDescriptor) {
   return new Set([item.title, item.fileName].filter(Boolean).map((value) => normalizeConfluenceFilename(value!)));
 }
 
-function matches(reference: LogicalConfluenceImage, item: ConfluenceAttachmentDescriptor) {
-  return item.id === reference.attachmentId
-    || Boolean(item.fileId && (item.fileId === reference.fileId || item.fileId === reference.attachmentId))
-    || Boolean(reference.normalizedFilename && names(item).has(reference.normalizedFilename));
+function selectAttachment(reference: LogicalConfluenceImage, attachments: ConfluenceAttachmentDescriptor[]) {
+  const byAttachmentId = attachments.filter((item) => item.id === reference.attachmentId);
+  const byFileId = attachments.filter((item) => Boolean(item.fileId
+    && (item.fileId === reference.fileId || item.fileId === reference.attachmentId)));
+  const byFilename = attachments.filter((item) => Boolean(reference.normalizedFilename
+    && names(item).has(reference.normalizedFilename)));
+  const matches = byAttachmentId.length ? byAttachmentId : byFileId.length ? byFileId : byFilename;
+  const candidates = [...new Map(matches.map((item) => [item.id, item])).values()];
+  return { candidate: candidates.length === 1 ? candidates[0] : undefined, ambiguous: candidates.length > 1 };
 }
 
 function metadataDownloadUrl(cloudId: string, pageId: string, link: string, cloudUrl: string) {
@@ -117,6 +155,9 @@ export async function fetchConfluenceImageSnapshots(input: {
   token: string;
   representations: ConfluenceImageReference[][];
   fetcher?: typeof fetch;
+  onAsset?: (asset: SnapshotImage) => Promise<void>;
+  retainAssets?: boolean;
+  stopOnRateLimit?: boolean;
 }) {
   const fetcher = input.fetcher ?? fetch;
   const references = dedupeConfluenceImageReferences(input.pageId, input.representations).slice(0, 50);
@@ -154,12 +195,22 @@ export async function fetchConfluenceImageSnapshots(input: {
 
   for (const [index, reference] of references.entries()) {
     const stages: ResolverStageTrace[] = [listStage];
-    const candidates: ConfluenceAttachmentDescriptor[] = all.filter((item) => matches(reference, item));
-
-    let candidate = candidates[0];
+    const selection = selectAttachment(reference, all);
+    if (selection.ambiguous) {
+      const final = "source_untrusted" as const;
+      failures.push(final);
+      diagnostics.push({ image: index + 1, stages, final, finalCode: "ATTACHMENT_AMBIGUOUS" });
+      continue;
+    }
+    let candidate = selection.candidate;
     if (candidate?.id && attachmentNeedsSupplement(candidate)) {
       const metadata = await fetchAttachmentMetadata(input.cloudId, input.pageId, candidate.id, input.token, fetcher);
       stages.push({ stage: "attachment_metadata", status: metadata.status, hostCategory: "oauth_gateway" });
+      if (!metadata.ok && metadata.status === 429 && input.stopOnRateLimit) {
+        failures.push("fetch_failed");
+        diagnostics.push({ image: index + 1, stages, final: "fetch_failed", finalCode: "ATTACHMENT_RATE_LIMITED" });
+        break;
+      }
       if (metadata.ok) candidate = { ...candidate, ...metadata.attachment };
       else warnings.push({
         requestStage: "attachment_metadata",
@@ -203,6 +254,7 @@ export async function fetchConfluenceImageSnapshots(input: {
     }
 
     let binary: Awaited<ReturnType<typeof fetchAtlassianAttachmentBinary>> | null = null;
+    let rateLimited = false;
     for (const attempt of attempts.filter((item, itemIndex, values) => values.findIndex((other) => other.url === item.url) === itemIndex)) {
       binary = await fetchAtlassianAttachmentBinary(
         attempt.url,
@@ -213,22 +265,32 @@ export async function fetchConfluenceImageSnapshots(input: {
       );
       stages.push(...binary.trace.map((entry) => ({ stage: attempt.stage, ...entry })));
       if (binary.ok) break;
+      if (input.stopOnRateLimit && (binary.status === 429 || binary.trace.some((entry) => entry.status === 429))) {
+        rateLimited = true;
+        break;
+      }
     }
     if (!binary?.ok) {
       // optional metadataを含む過去の失敗ではなく、最後まで試した取得経路を根本原因にする。
       const decisiveCode = binary?.code;
       const final = attempts.length ? failureCode(decisiveCode ?? "ATTACHMENT_DOWNLOAD_FAILED") : "source_untrusted";
-      failures.push(final); diagnostics.push({ image: index + 1, stages, final, finalCode: decisiveCode }); continue;
+      failures.push(final); diagnostics.push({ image: index + 1, stages, final, finalCode: decisiveCode });
+      if (rateLimited) break;
+      continue;
     }
     const filename = candidate?.title || reference.filename || "confluence-image";
-    assets.push({
+    const asset: SnapshotImage = {
       assetKey: crypto.randomUUID().replaceAll("-", ""),
       filename,
       mime: binary.mediaType,
       bytes: binary.bytes,
       sha256: await sha256(binary.bytes),
       reference,
-    });
+    };
+    // Bulk imports persist each image before fetching the next one, keeping memory
+    // bounded by one image rather than the size of the entire Confluence page.
+    if (input.onAsset) await input.onAsset(asset);
+    if (input.retainAssets !== false) assets.push(asset);
     diagnostics.push({ image: index + 1, stages, final: "saved" });
   }
   return { references, assets, failures, diagnostics, warnings };

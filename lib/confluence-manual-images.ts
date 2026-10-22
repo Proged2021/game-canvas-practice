@@ -41,7 +41,7 @@ async function stableSlotKey(pageId: string, filename: string, occurrence: numbe
 
 function markdownImageReferences(markdown: string) {
   const references: Array<{ alt: string; source: string }> = [];
-  for (const match of markdown.matchAll(/!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g))
+  for (const match of markdown.matchAll(/!\[([^\]]*)\]\(\s*(?:<([^>]*)>|([^\s)]*))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g))
     references.push({ alt: match[1] ?? "", source: match[2] ?? match[3] ?? "" });
   for (const match of markdown.matchAll(/<img\b[^>]*>/gi)) {
     const source = attribute(match[0], "src");
