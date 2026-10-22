@@ -270,6 +270,7 @@ export function WorkspaceClient({
   const [data, setData] = useState<WorkspaceData | null>(initialData),
     [selectedId, setSelectedId] = useState(initialSceneId ?? initialData.scenes[0]?.id ?? ""),
     [editMode, setEditMode] = useState(true);
+  const editModeRequest = useRef(0);
   const [saveState, setSaveState] = useState<
       "saved" | "saving" | "dirty" | "conflict" | "error"
     >("saved"),
@@ -1700,13 +1701,16 @@ export function WorkspaceClient({
             <Switch
               checked={editMode && editable}
               onCheckedChange={(checked) => {
+                const request = ++editModeRequest.current;
                 if (checked) return setEditMode(true);
                 if (!active) return setEditMode(false);
                 void flushLocalStory(active.id).then(() => {
+                  if (request !== editModeRequest.current) return;
                   setLocalStoryEditing(false);
                   setLocalStoryResetOpen(false);
                   setEditMode(false);
                 }).catch(() => {
+                  if (request !== editModeRequest.current) return;
                   setLocalStorySaveState("error");
                   setLocalStoryFeedback("保存に失敗したため閲覧モードへ切り替えていません。再試行してください。");
                 });
@@ -2076,7 +2080,7 @@ export function WorkspaceClient({
                   <span>{String(i + 1).padStart(2, "0")}</span>
                   <strong>{s.title}</strong>
                 </button>
-                {editMode && editable && (
+                {editable && (
                   <div className="scene-order-actions" aria-label={`「${s.title}」の順番を変更`}>
                     <button type="button" className="scene-drag-handle"
                       onPointerDown={(event) => beginSceneDrag(event, s.id)}
@@ -2086,15 +2090,17 @@ export function WorkspaceClient({
                         event.preventDefault();
                         moveScene(s.id, event.key === "ArrowUp" ? -1 : 1);
                       }}
-                      disabled={reorderSaving} aria-label={`「${s.title}」を上下にスライドして順番を変更`}
-                      title="上下にドラッグして移動（矢印キーでも操作できます）">
+                      disabled={!editMode || reorderSaving} aria-label={`「${s.title}」を上下にスライドして順番を変更`}
+                      title={!editMode ? "編集モードに切り替えると順番を変更できます" : reorderSaving ? "場面の順番を保存しています" : "上下にドラッグして移動（矢印キーでも操作できます）"}>
                       <GripVertical size={16} />
                     </button>
-                    <button type="button" className="scene-delete-button"
-                      onClick={(event) => { event.stopPropagation(); setDeleteTarget(s); }}
-                      disabled={deleteSaving || reorderSaving} aria-label={`「${s.title}」を削除`} title="場面を削除">
-                      <X size={15} />
-                    </button>
+                    {editMode && (
+                      <button type="button" className="scene-delete-button"
+                        onClick={(event) => { event.stopPropagation(); setDeleteTarget(s); }}
+                        disabled={deleteSaving || reorderSaving} aria-label={`「${s.title}」を削除`} title="場面を削除">
+                        <X size={15} />
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
