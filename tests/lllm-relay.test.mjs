@@ -110,3 +110,32 @@ test('workspace names are escaped and every return link stays in its own workspa
  assert.ok(page.includes('href="/w/demo"'));assert.ok(!page.includes('/w/minamomura'));
  assert.ok(page.includes('name="lllm-workspace" content="demo"'));assert.ok(page.includes('id="retryConnection"'));
 });
+
+test('image controls recover after an initial offline connection without reloading the page',async()=>{
+ const nodes=new Map();
+ const node=id=>{if(!nodes.has(id))nodes.set(id,{value:id==='imageTarget'?'this':'',hidden:false,replaceChildren(){},append(){},addEventListener(){}});return nodes.get(id);};
+ const window={addEventListener(){},dispatchEvent(){}};
+ const document={getElementById:node,addEventListener(){},createElement(){return {};}};
+ const sandbox={window,document,Event,console,Map,URL,TextDecoder,TextEncoder,Uint8Array,setTimeout,clearTimeout,setInterval,clearInterval};
+ vm.runInNewContext(await readFile(new URL('../lllm/vault.js',import.meta.url),'utf8'),sandbox);
+ let online=false;
+ await window.PrivateImages.init({api:async()=>{if(!online)throw Error('offline');return {canUnlock:true,recipients:[]};}});
+ assert.equal(window.PrivateImages.ready(),false);
+ online=true;await window.PrivateImages.refresh();assert.equal(window.PrivateImages.ready(),true);
+});
+
+test('closing a page overwrites its throwaway image key and removes old result links',async()=>{
+ const nodes=new Map(),events=new Map(),calls=[];
+ const node=id=>{if(!nodes.has(id))nodes.set(id,{value:id==='imageTarget'?'this':'',hidden:false,replaceChildren(){},append(){},addEventListener(){},removeAttribute(name){delete this[name];}});return nodes.get(id);};
+ const secret=new Uint8Array(32).fill(37);
+ const window={addEventListener(name,fn){events.set(name,fn);},dispatchEvent(){}};
+ const document={getElementById:node,addEventListener(){},createElement(){return {};}};
+ const sandbox={window,document,Event,console,Map,URL,TextDecoder,TextEncoder,Uint8Array,setTimeout,clearTimeout,setInterval,clearInterval,
+  StudioCrypto:{createSessionKey(){return {id:'throwaway-test-session',pub:new Uint8Array(32),secret};},base64(){return 'synthetic-public-key';}}};
+ vm.runInNewContext(await readFile(new URL('../lllm/vault.js',import.meta.url),'utf8'),sandbox);
+ await window.PrivateImages.init({api:async(path)=>{calls.push(path);return {canUnlock:true,recipients:[]};}});
+ await window.PrivateImages.prepare();assert.equal(node('keyLock').hidden,false);
+ node('editEncryptedDownload').href='/api/private/files/expired-test-result';events.get('pagehide')();
+ assert.ok(secret.every(byte=>byte===0));assert.equal(node('keyLock').hidden,true);
+ assert.equal(node('editEncryptedDownload').href,undefined);assert.ok(calls.includes('/api/private/session/release'));
+});

@@ -9,6 +9,7 @@ window.PrivateImages=(()=>{
   const old=displayUrls.get(mode);if(old)URL.revokeObjectURL(old);displayUrls.delete(mode);
   $(mode+'Output').removeAttribute('src');$(mode+'Output').hidden=true;$(mode+'Empty').hidden=false;
   $(mode+'Download').hidden=true;$(mode+'Download').removeAttribute('href');$(mode+'UnlockResult').hidden=true;
+  $(mode+'EncryptedDownload').removeAttribute('href');
  }
  function armExpiry(mode,result){
   const clock={deadline:Date.now()+120000};displayTimers.set(mode,clock);
@@ -155,5 +156,5 @@ window.PrivateImages=(()=>{
   $('vaultArchive').addEventListener('toggle',()=>{if($('vaultArchive').open)archive().catch(e=>note(e.message,true));});
   document.addEventListener('visibilitychange',checkExpiry);window.addEventListener('focus',checkExpiry);window.addEventListener('pagehide',lock);try{await status();}catch(e){note(e.message,true);}
  }
- return {init,ready:()=>!!info&&(info.canUnlock||info.recipients.length>0),prepare,submit,show,archive,canUnlock:()=>!!info?.canUnlock};
+ return {init,refresh:status,ready:()=>!!info&&(info.canUnlock||info.recipients.length>0),prepare,submit,show,archive,canUnlock:()=>!!info?.canUnlock};
 })();

@@ -43,7 +43,7 @@ async function ensureModel(id,mode){
  }
  throw Error('モデルの準備に時間がかかっています。モデル管理から状態を確認してください。');
 }
-async function refresh(){if(ui.polling)return;ui.polling=true;$('retryConnection').disabled=true;try{await freshStatus();$('connectionNotice').hidden=true;if(ui.imageJob)await imageHistory();}catch(e){$('machineStatus').textContent='AIサーバーの接続待ち';$('machineStatus').parentElement.classList.add('offline');$('connectionNotice').hidden=false;$('connectionMessage').textContent=e.message||'PC側のAI STUDIOの起動を確認してください。接続は自動で再確認します。';if(!ui.busy)ui.server=null;controls();}finally{ui.polling=false;$('retryConnection').disabled=false;}}
+async function refresh(){if(ui.polling)return;ui.polling=true;$('retryConnection').disabled=true;try{await freshStatus();if(!PrivateImages.ready())await PrivateImages.refresh();$('connectionNotice').hidden=true;if(ui.imageJob)await imageHistory();}catch(e){$('machineStatus').textContent='AIサーバーの接続待ち';$('machineStatus').parentElement.classList.add('offline');$('connectionNotice').hidden=false;$('connectionMessage').textContent=e.message||'PC側のAI STUDIOの起動を確認してください。接続は自動で再確認します。';if(!ui.busy)ui.server=null;controls();}finally{ui.polling=false;$('retryConnection').disabled=false;}}
 $('retryConnection').addEventListener('click',()=>void refresh());
 for(const id of ['chatInput','generatePrompt','editPrompt'])$(id).addEventListener('input',controls);
 $('chatModel').addEventListener('change',()=>{$('temperature').value=$('chatModel').value==='gemma'?1:.7;});
@@ -93,7 +93,7 @@ window.addEventListener('privacyready',controls);window.addEventListener('queuec
 $('openAdrenalin').addEventListener('click',async()=>{const b=$('openAdrenalin');b.disabled=true;try{await freshStatus();const r=await api('/api/tools/adrenalin',{method:'POST'});$('adrenalinStatus').textContent=r.message;}catch(e){$('adrenalinStatus').textContent=e.message;}finally{b.disabled=false;}});
 GpuQueue.init({api,clientId});refresh();PrivateImages.init({api});setInterval(refresh,10000);controls();
 
-window.addEventListener('pagehide',()=>{ui.abort?.abort();ui.history=[];ui.lastReply='';$('messages').replaceChildren();$('chatInput').value='';$('systemPrompt').value='';});
+window.addEventListener('pagehide',()=>{ui.abort?.abort();ui.history=[];ui.lastReply='';ui.file=null;if(ui.preview)URL.revokeObjectURL(ui.preview);ui.preview=null;$('editImage').value='';$('editPreview').removeAttribute('src');$('messages').replaceChildren();for(const id of ['chatInput','systemPrompt','generatePrompt','generateNegative','editPrompt','editNegative'])$(id).value='';});
 
 
 
