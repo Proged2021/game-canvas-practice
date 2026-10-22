@@ -1,15 +1,16 @@
 import { env } from "cloudflare:workers";
 import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { LLLM_WORKSPACE_ID, relayJson } from "@/lib/lllm-policy";
+import { relayJson } from "@/lib/lllm-policy";
+import { lllmWorkspaceAvailable } from "@/lib/lllm-workspaces";
 
 export async function lllmAccess(slug: string, owner = false) {
   const auth = await authorizeWorkspace(slug, owner ? ["owner"] : undefined);
   if (!auth.ok) return auth;
-  if (auth.membership.workspace_id !== LLLM_WORKSPACE_ID)
+  if (!await lllmWorkspaceAvailable(auth.membership.workspace_id))
     return { ok: false, response: relayJson({ error: "このワークスペースにはLLLMが提供されていません" }, 403) } as const;
   const extension = await db().prepare("SELECT enabled FROM workspace_extensions WHERE workspace_id=? AND extension_id='lllm'")
-    .bind(LLLM_WORKSPACE_ID).first<{ enabled: number }>();
+    .bind(auth.membership.workspace_id).first<{ enabled: number }>();
   if (!extension?.enabled || !env.LLLM_PUBLIC_KEY)
     return { ok: false, response: relayJson({ error: "LLLM拡張機能が停止中です" }, 403) } as const;
   return auth;

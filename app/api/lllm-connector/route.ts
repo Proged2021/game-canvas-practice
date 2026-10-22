@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { connectorAuthenticated, cleanupRelay } from "@/lib/lllm-relay";
-import { LLLM_WORKSPACE_ID, MAX_PARTS, validJobId, validPart, validCiphertext, relayJson, boundedRelayBody } from "@/lib/lllm-policy";
+import { MAX_PARTS, validJobId, validPart, validCiphertext, relayJson, boundedRelayBody } from "@/lib/lllm-policy";
+import { LLLM_WORKSPACES_SQL, lllmActor } from "@/lib/lllm-workspaces";
 
 export async function POST(request: Request) {
   if (!await connectorAuthenticated(request)) return relayJson({ error: "Unauthorized" }, 401);
@@ -19,17 +20,18 @@ export async function POST(request: Request) {
     const active = [];
     for (const id of activeIds) {
       const exists = await db().prepare(`SELECT j.id FROM lllm_bridge_jobs j JOIN workspace_extensions e ON e.workspace_id=j.workspace_id AND e.extension_id='lllm' AND e.enabled=1
-        JOIN account_memberships m ON m.workspace_id=j.workspace_id AND m.account_key=j.account_key WHERE j.id=? AND j.state='claimed' AND j.expires_at>?`).bind(id, Date.now()).first();
+        JOIN account_memberships m ON m.workspace_id=j.workspace_id AND m.account_key=j.account_key WHERE j.id=? AND j.workspace_id IN (${LLLM_WORKSPACES_SQL}) AND j.state='claimed' AND j.expires_at>?`).bind(id, Date.now()).first();
       if (exists) active.push(id);
     }
-    const ready = await db().prepare(`SELECT j.id,j.account_key,j.request_parts FROM lllm_bridge_jobs j
+    const ready = await db().prepare(`SELECT j.id,j.workspace_id,j.account_key,j.request_parts FROM lllm_bridge_jobs j
       JOIN workspace_extensions e ON e.workspace_id=j.workspace_id AND e.extension_id='lllm' AND e.enabled=1
       JOIN account_memberships m ON m.workspace_id=j.workspace_id AND m.account_key=j.account_key
-      WHERE j.workspace_id=? AND j.state='ready' AND j.expires_at>? ORDER BY j.created_at LIMIT 8`).bind(LLLM_WORKSPACE_ID, Date.now()).all<{ id: string; account_key: string; request_parts: number }>();
+      WHERE j.workspace_id IN (${LLLM_WORKSPACES_SQL}) AND j.state='ready' AND j.expires_at>? ORDER BY j.created_at LIMIT 8`).bind(Date.now()).all<{ id: string; workspace_id: string; account_key: string; request_parts: number }>();
     const jobs = [];
     for (const job of ready.results.slice(0, Math.max(0, 12 - activeIds.length))) {
       const claimed = await db().prepare("UPDATE lllm_bridge_jobs SET state='claimed' WHERE id=? AND state='ready'").bind(job.id).run();
-      if (claimed.meta.changes) jobs.push(job);
+      if (claimed.meta.changes) jobs.push({ id: job.id, request_parts: job.request_parts,
+        account_key: await lllmActor(job.workspace_id, job.account_key) });
     }
     return relayJson({ jobs, active });
   }
@@ -37,7 +39,7 @@ export async function POST(request: Request) {
   const job = await db().prepare(`SELECT j.* FROM lllm_bridge_jobs j
     JOIN workspace_extensions e ON e.workspace_id=j.workspace_id AND e.extension_id='lllm' AND e.enabled=1
     JOIN account_memberships m ON m.workspace_id=j.workspace_id AND m.account_key=j.account_key
-    WHERE j.id=? AND j.workspace_id=? AND j.state='claimed' AND j.expires_at>?`).bind(b.id, LLLM_WORKSPACE_ID, Date.now()).first<{ request_parts: number }>();
+    WHERE j.id=? AND j.workspace_id IN (${LLLM_WORKSPACES_SQL}) AND j.state='claimed' AND j.expires_at>?`).bind(b.id, Date.now()).first<{ request_parts: number }>();
   if (!job) return relayJson({ error: "Expired or revoked" }, 404);
   if (b.action === "read" && validPart(b.part) && b.part < job.request_parts) {
     const chunk = await db().prepare("SELECT ciphertext FROM lllm_bridge_chunks WHERE job_id=? AND direction='request' AND part=?").bind(b.id, b.part).first();

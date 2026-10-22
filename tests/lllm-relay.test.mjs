@@ -32,7 +32,7 @@ const poll=async()=> (await connector({action:'poll',active:[]})).json();
 await connector({action:'boot',active:[]});
 const create=async (parts=1)=>{const id=randomUUID();assert.equal((await user({action:'create',id,parts})).status,201);return id;};
 async function ready(){const id=await create();await user({action:'chunk',id,part:0,ciphertext:'YQ=='});assert.equal((await user({action:'submit',id})).status,200);return id;}
-async function reset(){sqlite.exec('DELETE FROM lllm_bridge_chunks;DELETE FROM lllm_bridge_jobs;UPDATE workspace_extensions SET enabled=1;');state.user='alice';await connector({action:'poll',active:[]});}
+async function reset(){sqlite.exec("DELETE FROM lllm_bridge_chunks;DELETE FROM lllm_bridge_jobs;UPDATE workspace_extensions SET enabled=1;");state.user='alice';await connector({action:'poll',active:[]});}
 
 test('migration corrects only the intended workspace and enables its extension',()=>{assert.equal(sqlite.prepare('SELECT name FROM workspaces WHERE id=?').get(W).name,'水無墓村');assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workspace_extensions').get().n,1);});
 test('anonymous, nonmembers and an identically named workspace cannot use the relay',async()=>{state.user=null;assert.equal((await get()).status,401);state.user='stranger';assert.equal((await get()).status,404);state.user='alice';assert.equal((await get('','other')).status,403);});
@@ -59,4 +59,54 @@ test('dynamic script and style responses prohibit caching and never resolve arbi
  for(const asset of ['relay.js','studio.js','studio.css','chat-crypto.js']){const r=await assets.GET(new Request(origin+'/lllm-assets/'+asset),{params:Promise.resolve({asset})});assert.equal(r.status,200);assert.match(r.headers.get('cache-control'),/no-store/);assert.ok((await r.text()).length>100);}
  for(const asset of ['__proto__','constructor','../server.cjs'])assert.equal((await assets.GET(new Request(origin+'/lllm-assets/test'),{params:Promise.resolve({asset})})).status,404);
  assert.match(await readFile(new URL('../app/apps/lllm/[slug]/route.ts',import.meta.url),'utf8'),/clear-site-data/);
+});
+
+const install = (slug, enabled=true) => routes.extensions.PUT(new Request(origin+'/api/workspaces/'+slug+'/extensions', {
+ method:'PUT',headers:{origin,'content-type':'application/json','x-plotline-csrf':'workspace-extensions'},
+ body:JSON.stringify({id:'lllm',enabled})}),context(slug));
+
+test('the server owner can install in the demo; unrelated owners and same names grant no access',async()=>{
+ await reset();
+ sqlite.exec("INSERT INTO workspaces VALUES('demo','demo','水無墓村デモ用','old'),('foreign','foreign','水無墓村','old');INSERT INTO account_memberships VALUES('demo','alice','owner'),('demo','bob','viewer'),('foreign','mallory','owner'),('foreign','alice','viewer');");
+ const catalog=await (await routes.extensions.GET(req('/api/workspaces/demo/extensions'),context('demo'))).json();
+ assert.equal(catalog.extensions[0].available,true);assert.equal(catalog.extensions[0].enabled,false);
+ state.user='bob';assert.equal((await install('demo')).status,403);
+ state.user='mallory';assert.equal((await install('foreign')).status,400);
+ state.user='alice';assert.equal((await install('demo')).status,200);assert.equal((await get('','demo')).status,200);
+ assert.equal((await get('','foreign')).status,403);
+});
+
+async function readyIn(slug){const id=randomUUID();assert.equal((await user({action:'create',id,parts:1},slug)).status,201);await user({action:'chunk',id,part:0,ciphertext:'YQ=='},slug);assert.equal((await user({action:'submit',id},slug)).status,200);return id;}
+
+test('the same member is isolated across workspaces, including the local GPU identity',async()=>{
+ await reset();const source=await readyIn('minamomura'),demo=await readyIn('demo');
+ assert.equal((await get('?id='+source,'demo')).status,404);assert.equal((await user({action:'delete',id:source},'demo')).status,404);
+ const claimed=(await poll()).jobs;assert.equal(claimed.length,2);
+ assert.notEqual(claimed.find(j=>j.id===source).account_key,claimed.find(j=>j.id===demo).account_key);
+ assert.equal((await connector({action:'read',id:demo,part:0})).status,200);
+});
+
+test('stopping the demo cleans only its data and keeps the source workspace usable',async()=>{
+ await reset();const source=await readyIn('minamomura'),demo=await readyIn('demo');
+ assert.equal((await install('demo',false)).status,200);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM lllm_bridge_jobs WHERE id=?').get(demo).n,0);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM lllm_bridge_jobs WHERE id=?').get(source).n,1);
+ assert.equal((await get('','demo')).status,403);assert.equal((await get()).status,200);
+});
+
+test('removing the shared server owner revokes pending jobs, active jobs and results',async()=>{
+ await reset();const id=await readyIn('demo');await poll();
+ sqlite.prepare("UPDATE account_memberships SET role='editor' WHERE workspace_id=? AND account_key='alice'").run(W);
+ try{assert.equal((await get('','demo')).status,403);assert.deepEqual((await (await connector({action:'poll',active:[id]})).json()).active,[]);assert.equal((await connector({action:'write',id,part:0,ciphertext:'YQ=='})).status,404);}
+ finally{sqlite.prepare("UPDATE account_memberships SET role='owner' WHERE workspace_id=? AND account_key='alice'").run(W);}
+});
+
+test('workspace names are escaped and every return link stays in its own workspace',async()=>{
+ const output=new URL('../.sites-runtime/tests/lllm-page.mjs',import.meta.url);
+ await build({entryPoints:['lib/lllm-page.ts'],bundle:true,format:'esm',platform:'node',outfile:output.pathname.replace(/^\/([A-Z]:)/,'$1')});
+ const {lllmPage}=await import(output.href);
+ const page=lllmPage('demo','<img src=x onerror=alert(1)> & $&');
+ assert.ok(page.includes('&lt;img src=x onerror=alert(1)&gt; &amp; $&'));assert.ok(!page.includes('<img src=x'));
+ assert.ok(page.includes('href="/w/demo"'));assert.ok(!page.includes('/w/minamomura'));
+ assert.ok(page.includes('name="lllm-workspace" content="demo"'));assert.ok(page.includes('id="retryConnection"'));
 });

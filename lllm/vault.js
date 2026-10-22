@@ -20,7 +20,7 @@ window.PrivateImages=(()=>{
  function clearViewer(){if(viewer?.bytes)viewer.bytes.fill(0);viewer=null;$('encryptedImageFile').value='';$('keyFile').value='';$('keyUnlockPassword').value='';$('imageOpenPanel').hidden=true;}
  function lock(){
   if(session)api('/api/private/session/release',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({id:session.id})}).catch(()=>{});
-  epoch++;key?.secret.fill(0);session?.secret.fill(0);key=session=null;
+  epoch++;key?.secret.fill(0);session?.secret.fill(0);key=session=null;pending.clear();
   for(const url of downloads)URL.revokeObjectURL(url);downloads.length=0;
   for(const mode of ['generate','edit'])clearDisplay(mode);clearViewer();render();
  }
@@ -147,7 +147,7 @@ window.PrivateImages=(()=>{
   return api('/api/private/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...values,file:undefined,mode,recipient,reference})});
  }
  async function init(options){
-  api=options.api;$('keyCreate').onclick=create;$('keyUnlock').onclick=unlock;$('keyLock').onclick=()=>{lock();note('表示中の画像を閉じました。次に生成すると、また自動で表示されます。');};
+  api=options.api;$('keyCreate').onclick=create;$('keyUnlock').onclick=unlock;$('keyLock').onclick=()=>{lock();note('画像と一時鍵を閉じました。次の生成時には新しい鍵を作ります。');};
   $('openSavedImage').onclick=()=>openViewer();$('closeImageOpen').onclick=clearViewer;$('encryptedImageFile').onchange=openSaved;
   $('keyUnlockPassword').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();unlock();}};
   $('imageTarget').onchange=()=>{render();note('');};$('vaultRecipient').onchange=()=>archive().catch(e=>note(e.message,true));
