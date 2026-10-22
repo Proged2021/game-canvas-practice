@@ -1,4 +1,5 @@
 "use client";
+import { WorkspaceExtensions } from "@/components/workspace-extensions";
 import {
   FormEvent,
   ClipboardEvent as ReactClipboardEvent,
@@ -1648,6 +1649,7 @@ export function WorkspaceClient({
           </div>
         </div>
         <div className="workspace-actions">
+          <WorkspaceExtensions slug={slug} />
           {editMode && editable && (
             <div className="history-actions" aria-label="編集履歴">
               <Button

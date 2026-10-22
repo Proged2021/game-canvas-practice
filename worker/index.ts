@@ -44,6 +44,13 @@ const worker = {
     const response = await handler.fetch(request, env, ctx);
     const headers = new Headers(response.headers);
     headers.set("x-plotline-version", PLOTLINE_RUNTIME_VERSION);
+    if (url.pathname.startsWith("/apps/lllm/") || url.pathname.startsWith("/api/lllm-connector") || url.pathname.includes("/extensions") || url.pathname.startsWith("/lllm-assets/")) {
+      headers.set("cache-control", "private, no-store, no-cache, max-age=0, must-revalidate");
+      headers.set("pragma", "no-cache");
+      headers.set("expires", "0");
+      headers.set("referrer-policy", "no-referrer");
+      headers.delete("etag");
+    }
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,

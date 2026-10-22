@@ -85,14 +85,16 @@ test("サーバーも確認名の完全一致を再検証する", async () => {
   assert.match(route, /status: 400/);
 });
 
-test("D1 transactional batchは実スキーマ19テーブルの対象データを依存順で削除する", async () => {
+test("D1 transactional batchはworkspace所属テーブルの対象データを依存順で削除する", async () => {
   const [schema, deletion] = await Promise.all([
     read("db/schema.ts"),
     read("lib/workspace-deletion.ts"),
   ]);
   const tables = [...schema.matchAll(/sqliteTable\(\s*"([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(new Set(tables).size, 19);
+  assert.equal(new Set(tables).size, 23);
   for (const table of new Set(tables)) {
+    // Connector heartbeat belongs to the server, not to a workspace.
+    if (table === "lllm_bridge_state") continue;
     assert.match(deletion, new RegExp(`DELETE FROM ${table}`), `missing ${table}`);
   }
   assert.match(deletion, /await database\.batch\(\[/);

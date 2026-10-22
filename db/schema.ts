@@ -377,3 +377,21 @@ export const ownerIdentityMigrations = sqliteTable("owner_identity_migrations", 
   migratedAccountKey: text("migrated_account_key").notNull(),
   migratedAt: text("migrated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const workspaceExtensions = sqliteTable("workspace_extensions", {
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  extensionId: text("extension_id").notNull(), enabled: integer("enabled").notNull().default(0),
+}, t => [primaryKey({ columns: [t.workspaceId, t.extensionId] })]);
+export const lllmBridgeJobs = sqliteTable("lllm_bridge_jobs", {
+  id: text("id").primaryKey(), workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  accountKey: text("account_key").notNull(), state: text("state").notNull().default("uploading"),
+  requestParts: integer("request_parts").notNull(), responseParts: integer("response_parts").notNull().default(0),
+  createdAt: integer("created_at").notNull(), expiresAt: integer("expires_at").notNull(),
+}, t => [index("lllm_jobs_pending").on(t.state,t.createdAt)]);
+export const lllmBridgeChunks = sqliteTable("lllm_bridge_chunks", {
+  jobId: text("job_id").notNull().references(() => lllmBridgeJobs.id, { onDelete: "cascade" }),
+  direction: text("direction").notNull(), part: integer("part").notNull(), ciphertext: text("ciphertext").notNull(),
+}, t => [primaryKey({ columns: [t.jobId,t.direction,t.part] })]);
+export const lllmBridgeState = sqliteTable("lllm_bridge_state", {
+  id: text("id").primaryKey(), lastSeen: integer("last_seen").notNull(),
+});
