@@ -12,6 +12,7 @@ const A = "10000000-0000-4000-8000-000000000001";
 const B = "10000000-0000-4000-8000-000000000002";
 const DELETED = "10000000-0000-4000-8000-000000000003";
 const KEY = "a".repeat(32);
+const SLOT = "d".repeat(32);
 const CURRENT = "20000000-0000-4000-8000-000000000001";
 const ORIGINAL = "20000000-0000-4000-8000-000000000002";
 const IMAGE = Buffer.from([1, 2, 3]);
@@ -38,14 +39,14 @@ function fixture() {
   run(`INSERT INTO scene_confluence_sources
     (scene_id,workspace_id,page_id,page_url,page_title,page_version,synced_html,last_synced_at,manual_generation)
     VALUES (?,?, '42','https://example.atlassian.net/wiki/pages/42','原文タイトル',3,?,'2026-10-21',?)`,
-  A, W, `<p>同期済みの原文</p><img data-confluence-slot="image-slot" src="${assetUrl}">`, CURRENT);
+  A, W, `<p>同期済みの原文</p><img data-confluence-slot="${SLOT}" data-confluence-slot-label="image.png" alt="image.png" src="${assetUrl}">`, CURRENT);
   run(`INSERT INTO scene_confluence_local_edits
     (scene_id,workspace_id,page_id,html,markdown,revision,updated_by_account_key)
     VALUES (?,?,'42',?,?,7,'alice')`, A, W, `<p>編集した本文</p><img src="${assetUrl}">`, `編集した本文 ![画像](${assetUrl})`);
   const addAsset = (key: string, sceneId: string, generation: string) => {
     run(`INSERT INTO scene_confluence_assets
       (asset_key,workspace_id,scene_id,page_id,original_filename,mime,byte_size,sha256,generation,provenance,slot_key)
-      VALUES (?,?,?,'42','image.png','image/png',3,?,?,'manual','image-slot')`, key, W, sceneId, SHA, generation);
+      VALUES (?,?,?,'42','image.png','image/png',3,?,?,'manual',?)`, key, W, sceneId, SHA, generation, SLOT);
     run("INSERT INTO scene_confluence_asset_chunks VALUES (?,0,?)", key, IMAGE.subarray(0, 2));
     run("INSERT INTO scene_confluence_asset_chunks VALUES (?,1,?)", key, IMAGE.subarray(2));
   };
@@ -53,7 +54,7 @@ function fixture() {
   addAsset("b".repeat(32), A, "unreachable-old-generation");
   addAsset("c".repeat(32), DELETED, "deleted-generation");
   run(`INSERT INTO scene_confluence_manual_assets
-    (generation,slot_key,asset_key,workspace_id,scene_id,page_id) VALUES (?,'image-slot',?,?,?,'42')`, CURRENT, KEY, W, A);
+    (generation,slot_key,asset_key,workspace_id,scene_id,page_id) VALUES (?,?,?,?,?,'42')`, CURRENT, SLOT, KEY, W, A);
   run(`INSERT INTO scene_confluence_attachments
     (scene_id,workspace_id,page_id,attachment_id,filename,media_type,file_size,download_path)
     VALUES (?,?,'42','123','image.png','image/png',3,'/download/attachments/42/image.png')`, A, W);
@@ -156,7 +157,7 @@ test("copies active scene content and image bytes into an independently owned wo
   assert.equal(mapping.generation, copiedSource.manual_generation);
   assert.notEqual(mapping.generation, CURRENT);
   assert.equal(mapping.asset_key, asset.asset_key);
-  assert.equal(mapping.slot_key, "image-slot");
+  assert.equal(mapping.slot_key, SLOT);
   const chunks = f.sqlite.prepare("SELECT data FROM scene_confluence_asset_chunks WHERE asset_key=? ORDER BY chunk_index").all(asset.asset_key);
   assert.deepEqual(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.data as Uint8Array))), IMAGE);
   assert.equal(f.count("scene_confluence_attachments", workspaceId), 1);
@@ -251,6 +252,61 @@ test("an unresolved legacy image fails before creating an incomplete demo", asyn
 test("incomplete stored image chunks cannot produce a successful copy", async (t) => {
   const f = fixture(); t.after(() => f.sqlite.close());
   f.run("DELETE FROM scene_confluence_asset_chunks WHERE asset_key=? AND chunk_index=1", KEY);
+  const requestId = randomUUID();
+  await assert.rejects(f.copy(requestId));
+  assert.equal(f.sqlite.prepare("SELECT id FROM workspaces WHERE id=?").get(requestId), undefined);
+});
+
+test("stale image destinations resolve to the current image-manager mapping before copying", async (t) => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  const staleUrl = `/api/workspaces/${W}/scenes/${A}/confluence/assets/${"f".repeat(32)}`;
+  const oldHtml = `<p>保持する原文</p><img data-confluence-slot="${SLOT}" data-confluence-slot-label="image.png" alt="image.png" src="${staleUrl}">`;
+  f.run("UPDATE scene_confluence_sources SET synced_html=? WHERE scene_id=?", oldHtml, A);
+  f.run("UPDATE scene_confluence_local_edits SET html=?,markdown=? WHERE scene_id=?", oldHtml, `保持する編集本文 ![image.png](${staleUrl})`, A);
+  f.run("UPDATE scenes SET markdown=? WHERE id=?", `右本文 ![image.png](${staleUrl})`, A);
+  const result = await f.copy();
+  const asset = f.sqlite.prepare("SELECT asset_key,scene_id FROM scene_confluence_assets WHERE workspace_id=?").get(result.workspace.id)!;
+  const expected = `/api/workspaces/${result.workspace.id}/scenes/${asset.scene_id}/confluence/assets/${asset.asset_key}`;
+  const storedSource = f.sqlite.prepare("SELECT synced_html FROM scene_confluence_sources WHERE scene_id=?").get(asset.scene_id)!;
+  const local = f.sqlite.prepare("SELECT html,markdown FROM scene_confluence_local_edits WHERE scene_id=?").get(asset.scene_id)!;
+  const scene = f.sqlite.prepare("SELECT markdown FROM scenes WHERE id=?").get(asset.scene_id)!;
+  for (const content of [storedSource.synced_html, local.html, local.markdown, scene.markdown]) {
+    assert.ok(String(content).includes(expected));
+    assert.ok(!String(content).includes(staleUrl));
+  }
+  assert.ok(String(storedSource.synced_html).includes(SLOT));
+  assert.ok(String(local.markdown).includes("保持する編集本文"));
+  assert.equal(f.sqlite.prepare("SELECT synced_html FROM scene_confluence_sources WHERE scene_id=?").get(A)?.synced_html, oldHtml);
+});
+
+test("missing images in a hidden snapshot become placeholders without changing the visible local text", async (t) => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  const missingSlot = "e".repeat(32);
+  const staleUrl = `/api/workspaces/${W}/scenes/${A}/confluence/assets/${"f".repeat(32)}`;
+  const missingTag = `<img data-confluence-slot="${missingSlot}" data-confluence-slot-label="missing.png" alt="missing.png" src="${staleUrl}">`;
+  const visibleMarkdown = "# 編集済み本文\n文章はそのまま。\n![missing.png]()";
+  f.run("UPDATE scene_confluence_sources SET synced_html=? WHERE scene_id=?", `<p>非表示の旧スナップショット</p>${missingTag}`, A);
+  f.run("UPDATE scene_confluence_local_edits SET html=?,markdown=? WHERE scene_id=?", `<p>編集済み本文</p>${missingTag}`, visibleMarkdown, A);
+  f.run("UPDATE scenes SET markdown=? WHERE id=?", `右本文 ![missing.png](${staleUrl})`, A);
+  const result = await f.copy();
+  const scene = f.sqlite.prepare("SELECT id,markdown FROM scenes WHERE workspace_id=? AND title='画像がある場面'").get(result.workspace.id)!;
+  const storedSource = f.sqlite.prepare("SELECT synced_html FROM scene_confluence_sources WHERE scene_id=?").get(scene.id)!;
+  const local = f.sqlite.prepare("SELECT html,markdown FROM scene_confluence_local_edits WHERE scene_id=?").get(scene.id)!;
+  assert.equal(local.markdown, visibleMarkdown);
+  assert.match(String(scene.markdown), /!\[missing\.png\]\(\s*(?:<\s*>)?\s*\)/);
+  for (const content of [storedSource.synced_html, local.html]) {
+    assert.ok(String(content).includes("confluence-image-unavailable"));
+    assert.ok(String(content).includes(`data-confluence-slot="${missingSlot}"`));
+    assert.ok(String(content).includes('alt="missing.png"'));
+    assert.ok(!String(content).includes(staleUrl));
+  }
+  assert.equal(f.sqlite.prepare("SELECT markdown FROM scene_confluence_local_edits WHERE scene_id=?").get(A)?.markdown, visibleMarkdown);
+});
+
+test("an unresolved stored-asset reference outside an image remains an error", async (t) => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  const staleUrl = `/api/workspaces/${W}/scenes/${A}/confluence/assets/${"f".repeat(32)}`;
+  f.run("UPDATE scenes SET markdown=? WHERE id=?", `[元資料への参照](${staleUrl})`, A);
   const requestId = randomUUID();
   await assert.rejects(f.copy(requestId));
   assert.equal(f.sqlite.prepare("SELECT id FROM workspaces WHERE id=?").get(requestId), undefined);

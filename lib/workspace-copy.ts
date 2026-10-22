@@ -1,3 +1,6 @@
+import { buildAvailableImageSlots, resolveStoredImageSources, rewriteConfluenceSlotSources } from "./confluence-manual-images.ts";
+import { extractLocalMarkdownImages, rewriteLocalHtmlImageSources, rewriteLocalMarkdownImageSources } from "./local-image-links.ts";
+
 type Row = Record<string, string | number | null>;
 type CopySource = { id: string; slug: string };
 
@@ -95,6 +98,47 @@ export async function copyWorkspaceContents(database: D1Database, source: CopySo
   const legacyImage = new RegExp(`/api/workspaces/(?:${escapedScope})/confluence/pages/([0-9]+)/attachments/([A-Za-z0-9_-]{1,128})`, "g");
   const sceneLegacyImage = new RegExp(`/api/workspaces/(?:${escapedScope})/confluence/scenes/([A-Za-z0-9_-]+)/pages/([0-9]+)/attachments/([A-Za-z0-9_-]{1,128})`, "g");
   const originalImage = new RegExp(`/api/workspaces/(?:${escapedScope})/(?:scenes/[^/\\s"<>]+/confluence/assets/|confluence/(?:scenes/[^/\\s"<>]+/)?pages/[^/\\s"<>]+/attachments/)`);
+  const unavailableStoredImage = (value: string) => [...value.matchAll(storedImage)].some((match) =>
+    !snapshot.assets.some(asset => asset.scene_id === match[1] && asset.asset_key === match[2]));
+  const normalized = new Map<string, {markdown: string; syncedHtml: string; localHtml: string | null; localMarkdown: string | null}>();
+  for (const scene of snapshot.scenes) {
+    const sceneId = String(scene.id);
+    const src = snapshot.sources.find(row => row.scene_id === sceneId);
+    const local = snapshot.edits.find(row => row.scene_id === sceneId);
+    const prefix = `/api/workspaces/${source.id}/scenes/${sceneId}/confluence/assets`;
+    const mapping = new Map(snapshot.manual.filter(row => row.scene_id === sceneId)
+      .map(row => [String(row.slot_key), String(row.asset_key)]));
+    const slots = src ? (await buildAvailableImageSlots({pageId: String(src.page_id), syncedHtml: String(src.synced_html),
+      localMarkdown: local?.markdown == null ? null : String(local.markdown), sceneMarkdown: String(scene.markdown)}))
+      .map(slot => ({...slot, src: mapping.has(slot.slotKey) ? `${prefix}/${mapping.get(slot.slotKey)}` : null})) : [];
+    // Match the normal reader's current slot resolution before changing workspace IDs.
+    // Deleted image bytes can leave stale URLs in the hidden synced backup; retain their
+    // labels/slots as unavailable images instead of retaining access to the source workspace.
+    const html = (value: string, localEdit = false) => (localEdit ? rewriteLocalHtmlImageSources(value, slots) : value).replace(/<img\b[^>]*>/gi, tag => {
+      const sourceAttribute = tag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+      if (!unavailableStoredImage(sourceAttribute?.[1] ?? sourceAttribute?.[2] ?? "")) return tag;
+      const withoutSrc = tag.replace(/\s+src\s*=\s*(?:"[^"]*"|'[^']*')/i, "");
+      return /\bclass\s*=/i.test(withoutSrc)
+        ? withoutSrc.replace(/(\bclass\s*=\s*)(["'])([^"']*)\2/i, '$1$2$3 confluence-image-unavailable$2')
+        : withoutSrc.replace(/<img\b/i, '<img class="confluence-image-unavailable"');
+    });
+    const markdown = (value: string) => {
+      let resolved = resolveStoredImageSources(rewriteLocalMarkdownImageSources(value, slots), slots);
+      for (const image of extractLocalMarkdownImages(resolved).reverse()) {
+        if (!unavailableStoredImage(image.source)) continue;
+        const original = resolved.slice(image.start, image.end);
+        const destinationStart = original.indexOf("](") + 2;
+        const sourceStart = original.indexOf(image.source, destinationStart);
+        const token = original.slice(0, sourceStart) + original.slice(sourceStart + image.source.length);
+        resolved = resolved.slice(0, image.start) + token + resolved.slice(image.end);
+      }
+      return resolved;
+    };
+    normalized.set(sceneId, {markdown: markdown(String(scene.markdown)),
+      syncedHtml: src ? html(rewriteConfluenceSlotSources(String(src.synced_html), prefix, mapping)) : "",
+      localHtml: local?.html == null ? null : html(String(local.html), true),
+      localMarkdown: local?.markdown == null ? null : markdown(String(local.markdown))});
+  }
   const rewrite = (value: string | number | null, currentScene: string) => {
     if (typeof value !== "string") return value;
     const attachment = (_match: string, sceneId: string | undefined, pageId: string, attachmentId: string) => {
@@ -111,12 +155,12 @@ export async function copyWorkspaceContents(database: D1Database, source: CopySo
   };
   const now = new Date().toISOString();
   const scenes = snapshot.scenes.map(row => ({ ...row, id: sceneIds.get(String(row.id)), workspace_id: requestId,
-    markdown: rewrite(row.markdown, String(row.id)), revision: 1, updated_by: `account:${ownerAccountKey}`, updated_at: now }));
+    markdown: rewrite(normalized.get(String(row.id))!.markdown, String(row.id)), revision: 1, updated_by: `account:${ownerAccountKey}`, updated_at: now }));
   const sources = snapshot.sources.map(row => ({ ...row, scene_id: sceneIds.get(String(row.scene_id)), workspace_id: requestId,
-    synced_html: rewrite(row.synced_html, String(row.scene_id)), asset_generation: generation(row.asset_generation), manual_generation: generation(row.manual_generation),
+    synced_html: rewrite(normalized.get(String(row.scene_id))!.syncedHtml, String(row.scene_id)), asset_generation: generation(row.asset_generation), manual_generation: generation(row.manual_generation),
     last_checked_at: null, last_error: null, updated_at: now }));
   const edits = snapshot.edits.map(row => ({ ...row, scene_id: sceneIds.get(String(row.scene_id)), workspace_id: requestId,
-    html: rewrite(row.html, String(row.scene_id)), markdown: rewrite(row.markdown, String(row.scene_id)), revision: 1, updated_by_account_key: ownerAccountKey, updated_at: now }));
+    html: rewrite(normalized.get(String(row.scene_id))!.localHtml, String(row.scene_id)), markdown: rewrite(normalized.get(String(row.scene_id))!.localMarkdown, String(row.scene_id)), revision: 1, updated_by_account_key: ownerAccountKey, updated_at: now }));
   const assets = snapshot.assets.map(row => ({ ...row, asset_key: assetIds.get(String(row.asset_key)), workspace_id: requestId,
     scene_id: sceneIds.get(String(row.scene_id)), generation: generation(row.generation) }));
   const manual = snapshot.manual.map(row => ({ ...row, generation: generation(row.generation), workspace_id: requestId,
