@@ -50,7 +50,7 @@ async function invoke(packet,account,id,ctx,signal){
 module.exports=function startWorkspaceRelay(ctx){
  const configPath=path.join(ctx.root,'state','workspace-lllm.dpapi');
  if(!fs.existsSync(configPath))return {close(){}};
- const script="$p=[IO.File]::ReadAllText($env:LLLM_CONFIG_PATH);$s=ConvertTo-SecureString $p;$b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s);try{[Console]::Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b))}finally{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}";
+ const script="$ErrorActionPreference='Stop';$null=[Reflection.Assembly]::LoadWithPartialName('System.Security');$p=[IO.File]::ReadAllBytes($env:LLLM_CONFIG_PATH);$v=[Security.Cryptography.ProtectedData]::Unprotect($p,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);try{[Console]::Write([Text.Encoding]::UTF8.GetString($v))}finally{[Array]::Clear($v,0,$v.Length)}";
  const opened=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{encoding:'utf8',windowsHide:true,env:{...process.env,LLLM_CONFIG_PATH:configPath},timeout:15000});
  if(opened.status!==0){console.error('Workspace LLLM configuration unavailable');return {close(){}};}
  let cfg;try{cfg=JSON.parse(opened.stdout);}catch{return {close(){}};}opened.stdout='';
