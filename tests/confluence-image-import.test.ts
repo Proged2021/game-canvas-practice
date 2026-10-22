@@ -79,6 +79,8 @@ function fixture() {
   const remote = {
     failBad: true,
     pageStatus: 200,
+    pageRedirect: null as null | "canonical" | "external" | "loop",
+    externalPageRedirectTarget: "https://evil.invalid/collect",
     onBinary: undefined as undefined | ((filename: string) => void),
     calls: [] as Array<{url: string; headers: Headers}>,
   };
@@ -96,6 +98,13 @@ function fixture() {
       return new Response(new Uint8Array(filename === "new.png" ? LARGE_PNG : PNG), {headers: {"content-type": "image/png"}});
     }
     if (url.pathname.endsWith(`/pages/${PAGE}`)) {
+      if (remote.pageRedirect === "loop") return new Response(null, {status: 302, headers: {location: url.toString()}});
+      if (remote.pageRedirect === "external") return new Response(null, {status: 302, headers: {location: `${remote.externalPageRedirectTarget}?body-format=${url.searchParams.get("body-format")}`}});
+      if (remote.pageRedirect === "canonical" && !url.searchParams.has("canonical")) {
+        const canonical = new URL(url);
+        canonical.searchParams.set("canonical", "1");
+        return new Response(null, {status: 302, headers: {location: canonical.toString()}});
+      }
       if (remote.pageStatus !== 200) return new Response("page failed", {status: remote.pageStatus});
       const format = url.searchParams.get("body-format") || "view";
       return Response.json({id: PAGE, title: "最新版の題名", version: {number: 100}, body: {
@@ -277,6 +286,60 @@ test("a later concurrent edit is not absorbed as the importer baseline after an 
   assert.equal(mappings.length, 2);
   assert.ok(mappings.find(row => row.slot_key === NEW_SLOT));
   assert.equal(mappings.some(row => row.slot_key === BAD_SLOT), false);
+});
+
+test("page retrieval follows a canonical redirect within the same Confluence API page and preserves each body format", async t => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  f.remote.pageRedirect = "canonical";
+  f.remote.failBad = false;
+  const result = await f.invoke();
+  assert.equal(result.saved, 2);
+  assert.equal(result.failed, 0);
+  const followed = f.remote.calls.filter(call => new URL(call.url).searchParams.has("canonical"));
+  assert.deepEqual(followed.map(call => new URL(call.url).searchParams.get("body-format")).sort(), ["atlas_doc_format", "export_view", "storage", "view"]);
+  assert.ok(followed.every(call => {
+    const url = new URL(call.url);
+    return url.origin === "https://api.atlassian.com" && url.pathname === "/ex/confluence/cloud/wiki/api/v2/pages/42"
+      && call.headers.get("authorization") === "Bearer synthetic-token";
+  }));
+});
+
+test("a page redirect to another origin is rejected before sending the token to it", async t => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  f.remote.pageRedirect = "external";
+  await assert.rejects(f.invoke());
+  assert.ok(f.remote.calls.every(call => new URL(call.url).origin === "https://api.atlassian.com"));
+  assert.equal(f.activeMappings().length, 1);
+  assert.equal(f.activeMappings()[0].asset_key, KEY);
+});
+
+test("a page redirect cannot change the Confluence cloud, page or authenticated URL identity", async t => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  f.remote.pageRedirect = "external";
+  for (const target of [
+    "https://api.atlassian.com/ex/confluence/other-cloud/wiki/api/v2/pages/42",
+    "https://api.atlassian.com/ex/confluence/cloud/wiki/api/v2/pages/43",
+    "https://user:secret@api.atlassian.com/ex/confluence/cloud/wiki/api/v2/pages/42",
+  ]) {
+    f.remote.externalPageRedirectTarget = target;
+    f.remote.calls.length = 0;
+    await assert.rejects(f.invoke());
+    assert.ok(f.remote.calls.every(call => {
+      const url = new URL(call.url);
+      return !url.username && !url.password && url.pathname === "/ex/confluence/cloud/wiki/api/v2/pages/42";
+    }));
+  }
+  assert.equal(f.activeMappings().length, 1);
+});
+
+test("a page redirect loop is bounded and cannot publish an image or replace existing content", async t => {
+  const f = fixture(); t.after(() => f.sqlite.close());
+  f.remote.pageRedirect = "loop";
+  await assert.rejects(f.invoke());
+  assert.ok(f.remote.calls.length <= 16, "four representations each stop within the redirect limit");
+  assert.equal(f.activeMappings().length, 1);
+  assert.equal(f.activeMappings()[0].asset_key, KEY);
+  assert.equal(f.sqlite.prepare("SELECT markdown FROM scene_confluence_local_edits WHERE scene_id=?").get(SCENE)?.markdown, localText);
 });
 
 const routeState = {user: "alice" as string | null, sqlite: null as DatabaseSync | null, database: null as any,

@@ -29,7 +29,16 @@ export async function importConfluenceSceneImages(input: {
   fetcher?: typeof fetch;
 }) {
   const { database, workspaceId, sceneId, accountKey, connection } = input;
-  const fetcher = input.fetcher ?? fetch;
+  const transport = input.fetcher ?? fetch;
+  const fetcher: typeof fetch = async (resource,options) => {
+    try { return await transport(resource,options); }
+    catch(error) {
+      const url=new URL(typeof resource==="string"?resource:resource instanceof URL?resource.href:resource.url);
+      console.error("CONFLUENCE_IMAGE_FETCH_FAILED",{stage:url.pathname.includes("/pages/")?"page":url.pathname.includes("/attachments")?"attachment":"delivery",
+        format:url.searchParams.get("body-format"),error:error instanceof Error?error.name:"unknown"});
+      throw error;
+    }
+  };
   let captured = await database.prepare(contextSql).bind(workspaceId, sceneId).first<{ snapshot: string }>();
   if (!captured) throw new ConfluenceImageImportError("SOURCE_NOT_FOUND", "先にこの場面へConfluenceのリンクを設定して本文を同期してください。", 404);
   let context = JSON.parse(captured.snapshot) as Context;
@@ -62,14 +71,33 @@ export async function importConfluenceSceneImages(input: {
   const base = `https://api.atlassian.com/ex/confluence/${encodeURIComponent(connection.cloudId)}/wiki/api/v2/pages/${context.pageId}`;
   const headers = { authorization: `Bearer ${connection.token}`, accept: "application/json" };
   const getPage = async (format: string, required = false) => {
-    const response = await fetcher(`${base}?body-format=${format}`, {headers, redirect: "error", cache: "no-store"});
+    let current=`${base}?body-format=${format}`;
+    let response: Response | undefined;
+    const visited=new Set<string>();
+    for(let hop=0;hop<=3;hop++){
+      if(visited.has(current)) throw new ConfluenceImageImportError("CONFLUENCE_PAGE_REDIRECT","Confluenceのページ取得が同じ転送先を繰り返しています。",502);
+      visited.add(current);
+      try{response=await fetcher(current,{headers,redirect:"manual",cache:"no-store"});}
+      catch{throw new ConfluenceImageImportError("CONFLUENCE_PAGE_NETWORK","Confluenceのページ取得で接続エラーが発生しました。時間をおいて再試行してください。",502);}
+      if(![301,302,303,307,308].includes(response.status)) break;
+      const location=response.headers.get("location");
+      await response.body?.cancel();
+      let next: URL;
+      try{next=new URL(location??"",current);}catch{throw new ConfluenceImageImportError("CONFLUENCE_PAGE_REDIRECT","Confluenceの転送先を確認できませんでした。",502);}
+      if(!location||hop===3||next.origin!=="https://api.atlassian.com"||next.username||next.password
+        ||next.pathname.replace(/\/$/,"")!==new URL(base).pathname.replace(/\/$/,""))
+        throw new ConfluenceImageImportError("CONFLUENCE_PAGE_REDIRECT","Confluenceの転送先を安全に確認できませんでした。",502);
+      current=next.toString();
+    }
+    if(!response) throw new ConfluenceImageImportError("CONFLUENCE_PAGE_NETWORK","Confluenceのページを取得できませんでした。",502);
     if (!response.ok) {
       if (required || response.status === 429) throw new ConfluenceImageImportError(
         `CONFLUENCE_${response.status}`, response.status === 429 ? "Confluenceの取得制限に達しました。時間をおいて再試行してください。"
           : [401,403].includes(response.status) ? "Confluenceの接続またはページの閲覧権限を確認してください。" : "Confluenceのページを取得できませんでした。", response.status);
       return null;
     }
-    return response.json() as Promise<{id?: string;body?:Record<string,{value?: unknown}>}>;
+    try{return await response.json() as {id?: string;body?:Record<string,{value?: unknown}>};}
+    catch{if(!required)return null;throw new ConfluenceImageImportError("CONFLUENCE_PAGE_RESPONSE","Confluenceからページ情報を読み取れませんでした。",502);}
   };
   const [view, storage, exported, adf] = await Promise.all([getPage("view", true),getPage("storage"),getPage("export_view"),getPage("atlas_doc_format")]);
   const representations = [
