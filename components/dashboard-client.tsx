@@ -12,6 +12,7 @@ import {
   AlertCircle,
   BookOpen,
   ChevronRight,
+  Copy,
   LogOut,
   Plus,
   Sparkles,
@@ -53,6 +54,9 @@ export function DashboardClient({
   const [creating, setCreating] = useState(false);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  const [copyTarget, setCopyTarget] = useState<WorkspaceSummary | null>(null);
+  const copyRequestId = useRef("");
+  const createInFlight = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [deleteError, setDeleteError] = useState("");
@@ -85,6 +89,24 @@ export function DashboardClient({
   }, [load]);
 
   function showCreateDialog() {
+    setCopyTarget(null);
+    setName("");
+    setSlug("");
+    setError("");
+    setOpen(true);
+  }
+
+  function openCopyDialog(
+    event: MouseEvent<HTMLButtonElement>,
+    item: WorkspaceSummary,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (item.role !== "owner") return;
+    setCopyTarget(item);
+    copyRequestId.current = crypto.randomUUID();
+    setName(`${item.name}デモ用`.slice(0, 80));
+    setSlug("");
     setError("");
     setOpen(true);
   }
@@ -160,14 +182,20 @@ export function DashboardClient({
   async function createWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (creating) return;
+    if (createInFlight.current) return;
     setError("");
     if (!name.trim()) return setError("ワークスペース名を入力してください");
+    createInFlight.current = true;
     setCreating(true);
     try {
-      const response = await fetch("/api/workspaces", {
+      const response = await fetch(copyTarget
+        ? `/api/workspaces/${encodeURIComponent(copyTarget.slug)}/copy`
+        : "/api/workspaces", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, slug }),
+        headers: copyTarget
+          ? { "content-type": "application/json", "x-plotline-csrf": "copy-workspace" }
+          : { "content-type": "application/json" },
+        body: JSON.stringify(copyTarget ? { name, requestId: copyRequestId.current } : { name, slug }),
       });
       const result = (await response.json()) as {
         error?: string;
@@ -177,8 +205,9 @@ export function DashboardClient({
       location.assign(`/w/${result.workspace.slug}`);
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "ワークスペースを作成できませんでした",
+        e instanceof Error ? e.message : copyTarget ? "ワークスペースを複製できませんでした" : "ワークスペースを作成できませんでした",
       );
+      createInFlight.current = false;
       setCreating(false);
     }
   }
@@ -260,15 +289,26 @@ export function DashboardClient({
                   <ChevronRight size={19} className="card-arrow" />
                 </a>
                 {item.role === "owner" && (
-                  <button
-                    type="button"
-                    className="workspace-delete-button"
-                    aria-label={`ワークスペース「${item.name}」を削除`}
-                    title="ワークスペースを削除"
-                    onClick={(event) => openDeleteDialog(event, item)}
-                  >
-                    <Trash2 size={18} aria-hidden="true" />
-                  </button>
+                  <div className="workspace-card-actions">
+                    <button
+                      type="button"
+                      className="workspace-copy-button"
+                      aria-label={`ワークスペース「${item.name}」を複製`}
+                      title="ワークスペースを複製"
+                      onClick={(event) => openCopyDialog(event, item)}
+                    >
+                      <Copy size={18} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="workspace-delete-button"
+                      aria-label={`ワークスペース「${item.name}」を削除`}
+                      title="ワークスペースを削除"
+                      onClick={(event) => openDeleteDialog(event, item)}
+                    >
+                      <Trash2 size={18} aria-hidden="true" />
+                    </button>
+                  </div>
                 )}
               </article>
             ))
@@ -298,9 +338,11 @@ export function DashboardClient({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>新しいワークスペース</DialogTitle>
+            <DialogTitle>{copyTarget ? "ワークスペースを複製" : "新しいワークスペース"}</DialogTitle>
             <DialogDescription>
-              名前は必須です。スラッグを空欄にすると、安全な一意URLを自動生成します。
+              {copyTarget
+                ? "場面・本文・保存済み画像を独立したワークスペースに複製します。メンバーと外部サービスの接続は引き継ぎません。"
+                : "名前は必須です。スラッグを空欄にすると、安全な一意URLを自動生成します。"}
             </DialogDescription>
           </DialogHeader>
           <form className="create-form" onSubmit={createWorkspace}>
@@ -319,7 +361,7 @@ export function DashboardClient({
                 placeholder="例：星導の魔女 — Chapter 1"
               />
             </div>
-            <div className="field-group">
+            {!copyTarget && <div className="field-group">
               <label htmlFor="workspace-slug">
                 URL用スラッグ <span className="optional-label">任意</span>
               </label>
@@ -334,7 +376,7 @@ export function DashboardClient({
                 placeholder="例：chapter-1"
               />
               <small>半角英小文字・数字・ハイフン、3〜64文字</small>
-            </div>
+            </div>}
             {error && (
               <p className="form-error" role="alert">
                 <AlertCircle size={16} />
@@ -351,7 +393,7 @@ export function DashboardClient({
                 キャンセル
               </Button>
               <Button type="submit" disabled={creating}>
-                {creating ? "作成中…" : "作成する"}
+                {copyTarget ? creating ? "複製中…" : "複製する" : creating ? "作成中…" : "作成する"}
               </Button>
             </div>
           </form>
