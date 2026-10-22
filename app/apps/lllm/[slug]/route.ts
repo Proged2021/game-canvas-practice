@@ -12,6 +12,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
     headers: { ...privateHeaders, "content-type": "text/html; charset=utf-8",
       "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
       "permissions-policy": "camera=(), microphone=(), geolocation=()",
+      "clear-site-data": '"cache"',
     },
   });
 }

@@ -5,6 +5,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { randomUUID, generateKeyPairSync, webcrypto, publicEncrypt, randomBytes, createCipheriv } from 'node:crypto';
 import vm from 'node:vm';
+import { resolve } from 'node:path';
 import { build } from 'esbuild';
 const require=createRequire(import.meta.url);
 const {allowed,openRequest,sealResponse,invoke}=require('../server/lllm-connector.cjs').testHelpers;
@@ -47,7 +48,15 @@ test('browser transport round-trips a multi-chunk image through actual routes wi
   if(options.body&&JSON.parse(options.body).action==='submit')pump=(async()=>{const jobs=(await poll()).jobs;for(const job of jobs){let encoded='';for(let p=0;p<job.request_parts;p++)encoded+=(await (await connector({action:'read',id:job.id,part:p})).json()).ciphertext;assert.equal(encoded.includes('synthetic-private-image'),false);const opened=openRequest(Buffer.from(encoded,'base64'),pair.privateKey,job.id);assert.equal(opened.packet.path,'/api/private/reference');const bytes=Buffer.from(opened.packet.body,'base64');assert.equal(bytes.length,320000);const sealed=sealResponse({status:200,headers:{'content-type':'application/octet-stream'},body:bytes.toString('base64')},opened.key,job.id).toString('base64');for(let p=0;p<Math.ceil(sealed.length/180000);p++)await connector({action:'write',id:job.id,part:p,ciphertext:sealed.slice(p*180000,(p+1)*180000)});await connector({action:'complete',id:job.id,parts:Math.ceil(sealed.length/180000)});opened.key.fill(0);bytes.fill(0);}})();
   return result;};
  const window={fetch:nativeFetch,addEventListener(){}};const sandbox={window,document:{querySelector(){return {content:'minamomura'};}},location:{origin,reload(){}},crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,Headers,Response,Blob,DOMException,URL,btoa,atob,setTimeout:(fn)=>setTimeout(fn,1)};
- vm.runInNewContext(await readFile(new URL('../public/lllm-assets/relay.js',import.meta.url),'utf8'),sandbox);
+ vm.runInNewContext(await readFile(new URL('../lllm/relay.js',import.meta.url),'utf8'),sandbox);
  const bytes=new Uint8Array(320000).fill(123);const response=await window.fetch('/api/private/reference',{method:'POST',headers:{'content-type':'image/png'},body:new Blob([bytes])});assert.equal(response.status,200);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),bytes);assert.equal(response.headers.get('cache-control'),'no-store');await pump;
 });
 test('dispatch gives each account an isolated identity and injects its token only in memory',async()=>{let seen;const result=await invoke({method:'GET',path:'/api/status',body:'',headers:{'x-control-token':'untrusted'}},'alice',randomUUID(),{getToken:()=> 'server-secret',markRequest(){},async dispatch(req,res){seen={peer:req.socket.remoteAddress,token:req.headers['x-control-token']};res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({current:'qwen25',models:[],memory:{},actionToken:'server-secret',meshIp:'private'}));}},new AbortController().signal);assert.deepEqual(seen,{peer:'workspace:alice',token:'server-secret'});const text=Buffer.from(result.body,'base64').toString();assert.equal(text.includes('server-secret'),false);assert.equal(text.includes('meshIp'),false);});
+test('dynamic script and style responses prohibit caching and never resolve arbitrary assets',async()=>{
+ const output=new URL('../.sites-runtime/tests/lllm-assets.mjs',import.meta.url);
+ await build({entryPoints:['app/lllm-assets/[asset]/route.ts'],bundle:true,format:'esm',platform:'node',outfile:output.pathname.replace(/^\/([A-Z]:)/,'$1'),plugins:[{name:'raw-assets',setup(b){b.onResolve({filter:/\?raw$/},args=>({path:resolve(args.resolveDir,args.path.slice(0,-4)),namespace:'raw'}));b.onLoad({filter:/.*/,namespace:'raw'},async args=>({contents:await readFile(args.path,'utf8'),loader:'text'}));}}]});
+ const assets=await import(output.href);
+ for(const asset of ['relay.js','studio.js','studio.css','chat-crypto.js']){const r=await assets.GET(new Request(origin+'/lllm-assets/'+asset),{params:Promise.resolve({asset})});assert.equal(r.status,200);assert.match(r.headers.get('cache-control'),/no-store/);assert.ok((await r.text()).length>100);}
+ for(const asset of ['__proto__','constructor','../server.cjs'])assert.equal((await assets.GET(new Request(origin+'/lllm-assets/test'),{params:Promise.resolve({asset})})).status,404);
+ assert.match(await readFile(new URL('../app/apps/lllm/[slug]/route.ts',import.meta.url),'utf8'),/clear-site-data/);
+});

@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Puzzle } from "lucide-react";
 
 type Extension = { id: string; name: string; description: string; available: boolean; enabled: boolean; online: boolean; href: string };
 export function WorkspaceExtensions({ slug }: { slug: string }) {
@@ -14,9 +15,9 @@ export function WorkspaceExtensions({ slug }: { slug: string }) {
   return <>
     {items.filter(e=>e.enabled&&e.available).map(e=><Button key={e.id} variant="outline" size="sm" asChild><a href={e.href} target="_blank" rel="noopener noreferrer">LLLMを開く ↗</a></Button>)}
     <Dialog open={open} onOpenChange={v=>{setOpen(v);if(v)void load();}}>
-      <DialogTrigger asChild><Button variant="outline" size="sm">拡張機能</Button></DialogTrigger>
-      <DialogContent><DialogHeader><DialogTitle>ワークスペースの拡張機能</DialogTitle></DialogHeader>
-        <p>このワークスペースで使うアプリを選びます。追加・停止はオーナーが変更できます。</p>
+      <DialogTrigger asChild><Button variant="outline" size="sm" aria-label="ワークスペースの拡張機能"><Puzzle size={15} /><span>拡張機能</span></Button></DialogTrigger>
+      <DialogContent><DialogHeader><DialogTitle>ワークスペースの拡張機能</DialogTitle>
+        <DialogDescription>このワークスペースで使うアプリを選びます。追加・停止はオーナーが変更できます。</DialogDescription></DialogHeader>
         {items.map(e=><div key={e.id} style={{border:"1px solid var(--border)",borderRadius:12,padding:18,display:"grid",gap:12}}>
           <strong>{e.name}</strong><p>{e.description}</p>
           {!e.available?<p>水無墓村ワークスペースで利用できます。</p>:<><p>{e.enabled?(e.online?"追加済み · サーバーに接続中":"追加済み · サーバーの接続待ち"):"未追加"}</p><div style={{display:"flex",gap:8}}>
