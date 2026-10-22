@@ -1,31 +1,110 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Puzzle } from "lucide-react";
+import { Loader2, Puzzle } from "lucide-react";
 
-type Extension = { id: string; name: string; description: string; available: boolean; enabled: boolean; online: boolean; href: string };
-export function WorkspaceExtensions({ slug, initiallyOpen=false }: { slug: string; initiallyOpen?: boolean }) {
-  const [open,setOpen]=useState(initiallyOpen),[items,setItems]=useState<Extension[]>([]),[manage,setManage]=useState(false),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+type Extension = {
+  id: string;
+  name: string;
+  description: string;
+  workspaceName?: string;
+  reason?: string;
+  available: boolean;
+  enabled: boolean;
+  online: boolean;
+};
+
+export function WorkspaceExtensions({ slug, initiallyOpen = false }: { slug: string; initiallyOpen?: boolean }) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const [items, setItems] = useState<Extension[]>([]);
+  const [manage, setManage] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const loadSequence = useRef(0);
+  const saveInFlight = useRef(false);
+  const launchHref = `/apps/lllm/${encodeURIComponent(slug)}`;
   const load = useCallback(async (signal?: AbortSignal) => {
-    try {const r=await fetch(`/api/workspaces/${encodeURIComponent(slug)}/extensions`,{cache:"no-store",signal});const d=await r.json() as {error?: string; extensions: Extension[]; canManage: boolean};if(!r.ok)throw Error(d.error);if(signal?.aborted)return;setItems(d.extensions);setManage(d.canManage);setError("");}catch(e){if(!signal?.aborted)setError(e instanceof Error?e.message:"拡張機能を読み込めません");}
+    const sequence = ++loadSequence.current;
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/workspaces/${encodeURIComponent(slug)}/extensions`, { cache: "no-store", signal });
+      const result = await response.json() as { error?: string; extensions: Extension[]; canManage: boolean };
+      if (!response.ok) throw new Error(result.error ?? "拡張機能を読み込めませんでした。");
+      if (signal?.aborted || sequence !== loadSequence.current) return;
+      setItems(result.extensions);
+      setManage(result.canManage);
+      setError("");
+    } catch (reason) {
+      if (signal?.aborted || sequence !== loadSequence.current) return;
+      setItems([]);
+      setManage(false);
+      setError(reason instanceof Error ? reason.message : "拡張機能を読み込めませんでした。");
+    } finally {
+      if (!signal?.aborted && sequence === loadSequence.current) setLoading(false);
+    }
   }, [slug]);
-  useEffect(()=>{const controller=new AbortController();void load(controller.signal);const timer=setInterval(()=>void load(controller.signal),open?15000:30000);return()=>{controller.abort();clearInterval(timer);};},[load,open]);
-  async function toggle(e: Extension){setSaving(true);setError("");try{const r=await fetch(`/api/workspaces/${encodeURIComponent(slug)}/extensions`,{method:"PUT",headers:{"content-type":"application/json","x-plotline-csrf":"workspace-extensions"},body:JSON.stringify({id:e.id,enabled:!e.enabled})});const d=await r.json() as {error?:string};if(!r.ok)throw Error(d.error);await load();}catch(err){setError(err instanceof Error?err.message:"設定を変更できません");}finally{setSaving(false);}}
+  useEffect(() => {
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Recheck server-authorized access before displaying launch links.
+    void load(controller.signal);
+    const timer = setInterval(() => void load(controller.signal), open ? 15_000 : 30_000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [load, open]);
+  async function toggle(extension: Extension) {
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/workspaces/${encodeURIComponent(slug)}/extensions`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-plotline-csrf": "workspace-extensions" },
+        body: JSON.stringify({ id: extension.id, enabled: !extension.enabled }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "設定を変更できませんでした。");
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "設定を変更できませんでした。");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
+  }
   return <>
-    {items.filter(e=>e.enabled&&e.available).map(e=><Button key={e.id} variant="outline" size="sm" asChild><a href={e.href} target="_blank" rel="noopener noreferrer">AI STUDIOを開く ↗</a></Button>)}
+    {!loading && !error && items.filter((extension) => extension.enabled && extension.available).map((extension) => (
+      <Button key={extension.id} variant="outline" size="sm" asChild>
+        <a href={launchHref} target="_blank" rel="noopener noreferrer" aria-label={`${extension.workspaceName ?? slug}のAI STUDIO画面を別タブで開く`}>
+          {extension.online ? "AI STUDIOを開く ↗" : "AI STUDIOの画面を開く ↗"}
+        </a>
+      </Button>
+    ))}
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button variant="outline" size="sm" aria-label="ワークスペースの拡張機能"><Puzzle size={15} /><span>拡張機能</span></Button></DialogTrigger>
-      <DialogContent><DialogHeader><DialogTitle>ワークスペースの拡張機能</DialogTitle>
-        <DialogDescription>このワークスペースで使うアプリを選びます。追加・停止はオーナーが変更できます。</DialogDescription></DialogHeader>
-        {items.map(e=><div key={e.id} style={{border:"1px solid var(--border)",borderRadius:12,padding:18,display:"grid",gap:12}}>
-          <strong>{e.name}</strong><p>{e.description}</p>
-          {!e.available?<p>このAIサーバーの所有者が管理するワークスペースで利用できます。</p>:<><p role="status">{e.enabled?(e.online?"追加済み · 利用できます":"追加済み · AIサーバーの起動待ち"):"未追加"}</p>{e.enabled&&!e.online&&<p>PC側のAI STUDIOが起動すると接続します。開いた画面でも自動で接続を確認します。</p>}<div style={{display:"flex",gap:8}}>
-            {e.enabled&&<Button asChild><a href={e.href} target="_blank" rel="noopener noreferrer">別タブで開く ↗</a></Button>}
-            {manage&&<Button variant="outline" disabled={saving} onClick={()=>void toggle(e)}>{e.enabled?"停止する":"追加する"}</Button>}
-          </div></>}
-        </div>)}
-        {error&&<div role="alert"><p>{error}</p><Button variant="outline" onClick={()=>void load()}>再読み込み</Button></div>}
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>ワークスペースの拡張機能</DialogTitle>
+          <DialogDescription>水無墓村と、起動先のワークスペースの両方のメンバーが利用できます。追加・停止は起動先のオーナーが変更できます。</DialogDescription>
+        </DialogHeader>
+        {loading && <p role="status" style={{ display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={16} className="spin" />利用権限と接続状態を確認しています…</p>}
+        {items.map((extension) => <section key={extension.id} style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 18, display: "grid", gap: 12 }} aria-busy={loading || saving}>
+          <div><strong>{extension.name}</strong><p>利用するワークスペース: {extension.workspaceName ?? slug}</p></div>
+          <p>{extension.description}</p>
+          {!extension.available ? (
+            <p role="status">{extension.reason ?? "LLLMの利用には、水無墓村とこのワークスペースの両方への参加が必要です。"} 共有リンクを開くだけでは参加権限は付きません。</p>
+          ) : <>
+            <p role="status">{!extension.enabled ? "停止中 · このワークスペースからのLLLM利用は無効です。" : extension.online ? "有効 · 利用できます。" : "有効 · AIサーバーとの接続がなく、生成は実行できません。"}</p>
+            {extension.enabled && !extension.online && <p>画面を開いて設定を確認できます。AIサーバーが利用可能になるまで生成できません。画面を開くだけではモデルを起動しません。</p>}
+            {!extension.enabled && <p>停止中はLLLMの画面を開けません。利用を再開する場合は、オーナーが有効にしてください。</p>}
+          </>}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {extension.enabled && extension.available && !error && !loading && <Button asChild><a href={launchHref} target="_blank" rel="noopener noreferrer">{extension.online ? "別タブで開く ↗" : "画面を開く（生成不可）↗"}</a></Button>}
+            {manage && extension.available && <Button variant="outline" disabled={saving || loading} onClick={() => void toggle(extension)}>{saving ? "変更中…" : extension.enabled ? "停止する" : "有効にする"}</Button>}
+          </div>
+        </section>)}
+        {error && <div role="alert"><p>{error}</p><p>利用権限を確認できないため、起動リンクは表示していません。</p><Button variant="outline" disabled={loading || saving} onClick={() => void load()}>再読み込み</Button></div>}
       </DialogContent>
     </Dialog>
   </>;

@@ -12,6 +12,17 @@ export const LLLM_WORKSPACES_SQL = `
     AND source.role='owner' AND target.role='owner'
 `;
 
+// A shared workspace never grants access by itself: each caller must also
+// belong to the original workspace that owns this AI server.
+export const LLLM_MEMBER_ACCOUNTS_SQL = `
+  SELECT account_key FROM account_memberships WHERE workspace_id='${LLLM_WORKSPACE_ID}'
+`;
+
+export async function lllmActorMember(accountKey: string) {
+  return !!await db().prepare(`SELECT 1 AS allowed WHERE ? IN (${LLLM_MEMBER_ACCOUNTS_SQL})`)
+    .bind(accountKey).first();
+}
+
 export async function lllmWorkspaceAvailable(workspaceId: string) {
   return !!await db().prepare(`SELECT 1 AS allowed WHERE ? IN (${LLLM_WORKSPACES_SQL})`)
     .bind(workspaceId).first();

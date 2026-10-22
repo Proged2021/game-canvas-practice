@@ -1,12 +1,18 @@
 import { env } from "cloudflare:workers";
 import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { relayJson } from "@/lib/lllm-policy";
-import { lllmWorkspaceAvailable } from "@/lib/lllm-workspaces";
+import { privateHeaders, relayJson } from "@/lib/lllm-policy";
+import { lllmActorMember, lllmWorkspaceAvailable } from "@/lib/lllm-workspaces";
 
 export async function lllmAccess(slug: string, owner = false) {
   const auth = await authorizeWorkspace(slug, owner ? ["owner"] : undefined);
-  if (!auth.ok) return auth;
+  if (!auth.ok) {
+    const headers = new Headers(auth.response.headers);
+    for (const [name, value] of Object.entries(privateHeaders)) headers.set(name, value);
+    return { ...auth, response: new Response(auth.response.body, { status: auth.response.status, headers }) };
+  }
+  if (!await lllmActorMember(auth.user.accountKey))
+    return { ok: false, response: relayJson({ error: "LLLMの利用には、水無墓村とこのワークスペースの両方への参加が必要です。" }, 403) } as const;
   if (!await lllmWorkspaceAvailable(auth.membership.workspace_id))
     return { ok: false, response: relayJson({ error: "このワークスペースにはLLLMが提供されていません" }, 403) } as const;
   const extension = await db().prepare("SELECT enabled FROM workspace_extensions WHERE workspace_id=? AND extension_id='lllm'")

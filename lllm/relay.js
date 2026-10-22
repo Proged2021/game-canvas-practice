@@ -11,21 +11,42 @@
   const unb64 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0));
   const concat = (...arrays) => {const a=new Uint8Array(arrays.reduce((n,v)=>n+v.length,0));let i=0;for(const v of arrays){a.set(v,i);i+=v.length;}return a;};
   const pause = ms => new Promise(resolve=>setTimeout(resolve,ms));
+  let revoked=null;
+  function accessError(){const error=Error(revoked?.message||'LLLMの利用権限を確認できません。ワークスペースへ戻って確認してください。');error.status=revoked?.status||403;error.code=revoked?.code||'LLLM_ACCESS_REVOKED';return error;}
+  function revoke(error){
+    if(revoked)return;
+    revoked={status:error.status,code:error.code,message:error.message};publicKey=null;
+    for(const id of pending)cancelJob(id);
+    window.dispatchEvent(new CustomEvent('lllmaccessrevoked',{detail:{...revoked}}));
+  }
   async function json(query,body,signal) {
+    if(revoked)throw accessError();
     const r=await nativeFetch(endpoint+query,{method:body?'POST':'GET',cache:'no-store',credentials:'same-origin',signal,
       headers:body?{'Content-Type':'application/json','X-Plotline-Csrf':'lllm-relay'}:{},body:body?JSON.stringify(body):undefined});
-    const result=await r.json();if(!r.ok)throw Error(result.error||'LLLMとの通信に失敗しました');return result;
+    const result=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const error=Error(result.error||'LLLMとの通信に失敗しました');error.status=r.status;error.code=result.code||'LLLM_HTTP_'+r.status;
+      if([401,403,404].includes(r.status)){
+        if(!query&&!body)revoke(error);
+        // A missing job may only have expired. Confirm access independently.
+        else await json('',null,signal).catch(()=>{});
+      }
+      throw error;
+    }
+    if(revoked)throw accessError();
+    return result;
   }
   let publicKey;
   const getKey=async()=>publicKey||(publicKey=crypto.subtle.importKey('spki',unb64((await json('')).publicKey),{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']));
   async function relay(input, options={}) {
     const url=new URL(typeof input==='string'?input:input.url,location.origin);
     if(url.origin!==location.origin||!/^\/api\/(?:status|action|chat|queue|private)(?:\/|$)/.test(url.pathname))return nativeFetch(input,options);
+    if(revoked)throw accessError();
     const signal=options.signal;if(signal?.aborted)throw new DOMException('Cancelled','AbortError');
     const id=crypto.randomUUID(),rawKey=crypto.getRandomValues(new Uint8Array(32));
     let rawBody,plain,wire,key;
     pending.add(id);
-    const cancel=()=>{void json('',{action:'delete',id}).catch(()=>{});};
+    const cancel=()=>cancelJob(id);
     signal?.addEventListener('abort',cancel,{once:true});
     try {
       key=await crypto.subtle.importKey('raw',rawKey,'AES-GCM',false,['encrypt','decrypt']);
@@ -51,6 +72,7 @@
       plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:wire.subarray(0,12),additionalData:encoder.encode('lllm-v1:res:'+id)},key,wire.subarray(12)));
       const packet=JSON.parse(decoder.decode(plain));plain.fill(0);plain=null;wire.fill(0);wire=null;
       const result=unb64(packet.body);
+      if(revoked){result.fill(0);throw accessError();}
       return new Response(result,{status:packet.status,headers:{...packet.headers,'cache-control':'no-store'}});
     } finally {
       rawKey.fill(0);plain?.fill(0);wire?.fill(0);

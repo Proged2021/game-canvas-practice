@@ -1,10 +1,17 @@
 import { env } from "cloudflare:workers";
 import { db } from "@/lib/db";
-import { lllmAccess, deleteRelayJob } from "@/lib/lllm-relay";
+import { lllmAccess } from "@/lib/lllm-relay";
+import { LLLM_MEMBER_ACCOUNTS_SQL, LLLM_WORKSPACES_SQL } from "@/lib/lllm-workspaces";
 import { JOB_TTL, MAX_PARTS, validPart, validJobId, validCiphertext, relayJson, boundedRelayBody } from "@/lib/lllm-policy";
 import { validateSameOriginJson } from "@/lib/request-security";
 
 type Context = { params: Promise<{ slug: string }> };
+// Recheck membership in the same SQL statement that reads or changes a job.
+// An earlier HTTP authorization result must not outlive a membership removal.
+const memberGuard = `?3 IN (${LLLM_MEMBER_ACCOUNTS_SQL}) AND ?2 IN (${LLLM_WORKSPACES_SQL})
+  AND EXISTS (SELECT 1 FROM account_memberships m WHERE m.workspace_id=?2 AND m.account_key=?3)
+  AND EXISTS (SELECT 1 FROM workspace_extensions e WHERE e.workspace_id=?2 AND e.extension_id='lllm' AND e.enabled=1)`;
+const userJob = `FROM lllm_bridge_jobs j WHERE j.id=?1 AND j.workspace_id=?2 AND j.account_key=?3 AND j.expires_at>?4 AND ${memberGuard}`;
 export async function GET(request: Request, { params }: Context) {
   const auth = await lllmAccess((await params).slug);
   if (!auth.ok) return auth.response;
@@ -12,13 +19,16 @@ export async function GET(request: Request, { params }: Context) {
   if (!query.has("id")) return relayJson({ publicKey: env.LLLM_PUBLIC_KEY });
   const id = query.get("id");
   if (!validJobId(id)) return relayJson({ error: "受付が見つかりません" }, 404);
-  const job = await db().prepare("SELECT state,response_parts FROM lllm_bridge_jobs WHERE id=? AND workspace_id=? AND account_key=? AND expires_at>?")
+  const job = await db().prepare(`SELECT j.state,j.response_parts ${userJob}`)
     .bind(id, auth.membership.workspace_id, auth.user.accountKey, Date.now()).first<{ state: string; response_parts: number }>();
   if (!job) return relayJson({ error: "受付が見つからないか、有効期限が切れました" }, 404);
   if (query.has("part")) {
     const part = Number(query.get("part"));
     if (job.state !== "done" || !validPart(part)) return relayJson({ error: "結果の準備中です" }, 409);
-    const chunk = await db().prepare("SELECT ciphertext FROM lllm_bridge_chunks WHERE job_id=? AND direction='response' AND part=?").bind(id, part).first();
+    const chunk = await db().prepare(`SELECT c.ciphertext FROM lllm_bridge_chunks c
+      WHERE c.job_id=?1 AND c.direction='response' AND c.part=?5
+        AND EXISTS (SELECT 1 ${userJob} AND j.state='done' AND c.part<j.response_parts)`)
+      .bind(id, auth.membership.workspace_id, auth.user.accountKey, Date.now(), part).first();
     return chunk ? relayJson(chunk) : relayJson({ error: "結果が見つかりません" }, 404);
   }
   return relayJson(job);
@@ -36,23 +46,36 @@ export async function POST(request: Request, { params }: Context) {
     if (!heartbeat || Date.now() - heartbeat.last_seen > 30_000) return relayJson({ error: "LLLMサーバーがオフラインです" }, 503);
     // A single atomic INSERT enforces both global and per-account bounds across isolates.
     const added = await db().prepare(`INSERT INTO lllm_bridge_jobs(id,workspace_id,account_key,request_parts,created_at,expires_at)
-      SELECT ?1,?2,?3,?4,?5,?6 WHERE
+      SELECT ?1,?2,?3,?4,?5,?6 WHERE ${memberGuard} AND
       (SELECT COUNT(*) FROM lllm_bridge_jobs WHERE expires_at>?5 AND state NOT IN ('failed'))<64 AND
       (SELECT COUNT(*) FROM lllm_bridge_jobs WHERE account_key=?3 AND expires_at>?5 AND state NOT IN ('failed'))<12
       ON CONFLICT(id) DO NOTHING`).bind(b.id, auth.membership.workspace_id, auth.user.accountKey, b.parts, Date.now(), Date.now() + JOB_TTL).run();
     return added.meta.changes ? relayJson({ ok: true }, 201) : relayJson({ error: "受付がいっぱいです。少し待ってください" }, 429);
   }
-  const job = await db().prepare("SELECT state,request_parts FROM lllm_bridge_jobs WHERE id=? AND workspace_id=? AND account_key=? AND expires_at>?")
+  const job = await db().prepare(`SELECT j.state,j.request_parts ${userJob}`)
     .bind(b.id, auth.membership.workspace_id, auth.user.accountKey, Date.now()).first<{ state: string; request_parts: number }>();
   if (!job) return relayJson({ error: "受付が見つかりません" }, 404);
-  if (b.action === "delete") { await deleteRelayJob(b.id); return relayJson({ ok: true }); }
+  if (b.action === "delete") {
+    const removed = await db().batch([
+      db().prepare(`DELETE FROM lllm_bridge_chunks WHERE job_id=?1 AND EXISTS (SELECT 1 ${userJob})`)
+        .bind(b.id, auth.membership.workspace_id, auth.user.accountKey, Date.now()),
+      db().prepare(`DELETE FROM lllm_bridge_jobs AS j WHERE j.id=?1 AND j.workspace_id=?2 AND j.account_key=?3 AND j.expires_at>?4 AND ${memberGuard}`)
+        .bind(b.id, auth.membership.workspace_id, auth.user.accountKey, Date.now()),
+    ]);
+    return removed[1].meta.changes ? relayJson({ok:true}) : relayJson({error:"受付が見つかりません"},404);
+  }
   if (b.action === "chunk" && job.state === "uploading" && validPart(b.part) && b.part < job.request_parts && validCiphertext(b.ciphertext)) {
-    await db().prepare("INSERT INTO lllm_bridge_chunks(job_id,direction,part,ciphertext) VALUES (?,'request',?,?) ON CONFLICT(job_id,direction,part) DO NOTHING").bind(b.id, b.part, b.ciphertext).run();
-    return relayJson({ ok: true });
+    const written = await db().prepare(`INSERT INTO lllm_bridge_chunks(job_id,direction,part,ciphertext)
+      SELECT j.id,'request',?5,?6 ${userJob} AND j.state='uploading' AND ?5<j.request_parts
+      ON CONFLICT(job_id,direction,part) DO UPDATE SET ciphertext=lllm_bridge_chunks.ciphertext`)
+      .bind(b.id,auth.membership.workspace_id,auth.user.accountKey,Date.now(),b.part,b.ciphertext).run();
+    return written.meta.changes ? relayJson({ ok: true }) : relayJson({error:"受付が見つからないか、利用権限が変更されました"},404);
   }
   if (b.action === "submit" && job.state === "uploading") {
-    const changed = await db().prepare("UPDATE lllm_bridge_jobs SET state='ready' WHERE id=? AND state='uploading' AND (SELECT COUNT(*) FROM lllm_bridge_chunks WHERE job_id=? AND direction='request')=request_parts")
-      .bind(b.id, b.id).run();
+    const changed = await db().prepare(`UPDATE lllm_bridge_jobs AS j SET state='ready'
+      WHERE j.id=?1 AND j.workspace_id=?2 AND j.account_key=?3 AND j.expires_at>?4 AND ${memberGuard}
+        AND j.state='uploading' AND (SELECT COUNT(*) FROM lllm_bridge_chunks WHERE job_id=?1 AND direction='request')=j.request_parts`)
+      .bind(b.id,auth.membership.workspace_id,auth.user.accountKey,Date.now()).run();
     return changed.meta.changes ? relayJson({ ok: true }) : relayJson({ error: "アップロードが未完了です" }, 409);
   }
   return relayJson({ error: "受付状態が変わりました" }, 409);

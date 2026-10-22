@@ -1,9 +1,9 @@
 window.PrivateImages=(()=>{
  const $=id=>document.getElementById(id);
- let api,info=null,key=null,session=null,working=false,epoch=0;
+ let api,info=null,key=null,session=null,working=false,epoch=0,revoked=false;
  const pending=new Map(),displayUrls=new Map(),displayTimers=new Map(),downloads=[];let viewer=null;
- const note=(text,error=false)=>{$('vaultStatus').textContent=text;$('vaultStatus').className='notice'+(error?' error':'');};
- function fileNote(text,error=false){$('imageOpenStatus').textContent=text;$('imageOpenStatus').className='notice'+(error?' error':'');}
+ const note=(text,error=false)=>{if(revoked)return;$('vaultStatus').textContent=text;$('vaultStatus').className='notice'+(error?' error':'');};
+ function fileNote(text,error=false){if(revoked)return;$('imageOpenStatus').textContent=text;$('imageOpenStatus').className='notice'+(error?' error':'');}
  function clearDisplay(mode){
   const clock=displayTimers.get(mode);if(clock){clearTimeout(clock.timeout);clearInterval(clock.interval);}displayTimers.delete(mode);$(mode+'Expiry').hidden=true;
   const old=displayUrls.get(mode);if(old)URL.revokeObjectURL(old);displayUrls.delete(mode);
@@ -25,9 +25,17 @@ window.PrivateImages=(()=>{
   for(const url of downloads)URL.revokeObjectURL(url);downloads.length=0;
   for(const mode of ['generate','edit'])clearDisplay(mode);clearViewer();render();
  }
+ function clear(){
+  if(revoked)return;revoked=true;info=null;working=false;lock();
+  $('vaultFiles').replaceChildren();$('vaultRecipient').replaceChildren();
+  for(const id of ['keyLabel','keyPassword','keyPasswordConfirm','keyUnlockPassword'])$(id).value='';
+  for(const id of ['keyCreate','keyUnlock','encryptedImageFile','keyFile','keyUnlockPassword','imageTarget','vaultRecipient','openSavedImage'])$(id).disabled=true;
+  $('keyLock').hidden=true;$('imageOpenPanel').hidden=true;$('vaultStatus').textContent='利用権限を確認できないため、画像と一時鍵を閉じました。';
+  window.dispatchEvent(new Event('privacyready'));
+ }
  function target(){return info?.canUnlock&&$('imageTarget').value!=='other'?'this':'other';}
  function render(){
-  if(!info)return;const selected=$('vaultRecipient').value;
+  if(revoked||!info)return;const selected=$('vaultRecipient').value;
   $('keyControls').hidden=!info.canUnlock;$('openSavedImage').hidden=!info.canUnlock;$('localKeyNotice').hidden=info.canUnlock;
   $('imageTarget').disabled=!info.canUnlock||working;
   if(!info.canUnlock){$('imageTarget').value='other';$('imageSecurityDetails').open=true;}
@@ -42,9 +50,11 @@ window.PrivateImages=(()=>{
   for(const id of ['keyCreate','keyUnlock','encryptedImageFile','keyFile','keyUnlockPassword'])$(id).disabled=working;
   window.dispatchEvent(new Event('privacyready'));
  }
- async function status(){info=await api('/api/private/status');render();}
+ async function status(){if(revoked)return;const start=epoch,next=await api('/api/private/status');if(revoked||start!==epoch)return;info=next;render();}
  async function prepare(){
+  if(revoked)throw Error('LLLMの利用権限を確認できません。ワークスペースへ戻って確認してください。');
   if(!info)await status();
+  if(revoked)throw Error('LLLMの利用権限を確認できません。ワークスペースへ戻って確認してください。');
   if(target()==='other'){
    if(!$('vaultRecipient').value)throw Error('「別の端末へ送る・その他の設定」で、画像の送信先を選んでください。');return $('vaultRecipient').value;
   }
@@ -124,6 +134,7 @@ window.PrivateImages=(()=>{
   }catch(e){if(next&&next!==key)next.secret.fill(0);fileNote(e.message,true);}finally{working=false;render();}
  }
  async function show(file,mode){
+  if(revoked)return false;
   if(!['generate','edit'].includes(mode))throw Error('表示先が不正です。');pending.set(mode,file);clearDisplay(mode);
   if(info?.canUnlock&&(session||key)){
    const start=epoch,response=await fetch(file,{cache:'no-store'});if(!response.ok)throw Error('画像の保管期限が切れました。保存済みの画像は「保存した画像を開く」から表示できます。');
@@ -134,7 +145,7 @@ window.PrivateImages=(()=>{
   $(mode+'EncryptedDownload').href=file;$(mode+'EncryptedDownload').download=file.split('/').pop()+'.aistudio';return false;
  }
  async function archive(){
-  const recipient=$('vaultRecipient').value;if(!recipient)return;const data=await api('/api/private/files?recipient='+encodeURIComponent(recipient)),container=$('vaultFiles');container.replaceChildren();
+  const recipient=$('vaultRecipient').value;if(revoked||!recipient)return;const start=epoch,data=await api('/api/private/files?recipient='+encodeURIComponent(recipient)),container=$('vaultFiles');if(revoked||start!==epoch)return;container.replaceChildren();
   if(!data.files.length){container.textContent='保管中の画像はありません。PC側の一時保管は10分です。';return;}
   for(const file of data.files){
    const row=document.createElement('div');row.className='vaultrow';const label=document.createElement('span');label.textContent=new Date(file.createdAt).toLocaleString('ja-JP')+' · '+(file.mode==='edit'?'編集':'生成');row.append(label);
@@ -154,7 +165,7 @@ window.PrivateImages=(()=>{
   $('imageTarget').onchange=()=>{render();note('');};$('vaultRecipient').onchange=()=>archive().catch(e=>note(e.message,true));
   for(const mode of ['generate','edit'])$(mode+'ViewResult').onclick=()=>{const file=pending.get(mode);if(file)openViewer({file,mode});};
   $('vaultArchive').addEventListener('toggle',()=>{if($('vaultArchive').open)archive().catch(e=>note(e.message,true));});
-  document.addEventListener('visibilitychange',checkExpiry);window.addEventListener('focus',checkExpiry);window.addEventListener('pagehide',lock);try{await status();}catch(e){note(e.message,true);}
+  document.addEventListener('visibilitychange',checkExpiry);window.addEventListener('focus',checkExpiry);window.addEventListener('pagehide',lock);window.addEventListener('lllmaccessrevoked',clear);try{await status();}catch(e){note(e.message,true);}
  }
- return {init,refresh:status,ready:()=>!!info&&(info.canUnlock||info.recipients.length>0),prepare,submit,show,archive,canUnlock:()=>!!info?.canUnlock};
+ return {init,refresh:status,lock,clear,ready:()=>!revoked&&!!info&&(info.canUnlock||info.recipients.length>0),prepare,submit,show,archive,canUnlock:()=>!revoked&&!!info?.canUnlock};
 })();

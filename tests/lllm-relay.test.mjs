@@ -71,7 +71,7 @@ test('the server owner can install in the demo; unrelated owners and same names 
  const catalog=await (await routes.extensions.GET(req('/api/workspaces/demo/extensions'),context('demo'))).json();
  assert.equal(catalog.extensions[0].available,true);assert.equal(catalog.extensions[0].enabled,false);
  state.user='bob';assert.equal((await install('demo')).status,403);
- state.user='mallory';assert.equal((await install('foreign')).status,400);
+ state.user='mallory';assert.equal((await install('foreign')).status,403);
  state.user='alice';assert.equal((await install('demo')).status,200);assert.equal((await get('','demo')).status,200);
  assert.equal((await get('','foreign')).status,403);
 });
