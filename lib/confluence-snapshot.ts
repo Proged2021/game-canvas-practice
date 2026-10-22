@@ -232,6 +232,14 @@ export async function fetchConfluenceImageSnapshots(input: {
     if (candidate?.id) {
       const id = encodeURIComponent(candidate.id);
       const base = `https://api.atlassian.com/ex/confluence/${encodeURIComponent(input.cloudId)}`;
+      // The v1 download endpoint uses an att-prefixed ID even when v2 metadata
+      // returns only digits (Atlassian CONFCLOUD-84433). Keep the raw fallback
+      // for installations that already accept the canonical v2 ID.
+      if (/^\d+$/.test(candidate.id)) attempts.push({
+        stage: "v1_attachment_download",
+        url: `${base}/wiki/rest/api/content/${encodeURIComponent(input.pageId)}/child/attachment/att${id}/download`,
+        attachmentId: `att${candidate.id}`,
+      });
       attempts.push({
         stage: "v1_attachment_download",
         url: `${base}/wiki/rest/api/content/${encodeURIComponent(input.pageId)}/child/attachment/${id}/download`,
@@ -259,7 +267,9 @@ export async function fetchConfluenceImageSnapshots(input: {
       binary = await fetchAtlassianAttachmentBinary(
         attempt.url,
         input.token,
-        candidate?.mediaType || "image/*",
+        // Thumbnail delivery may transcode a PNG original to JPEG or WebP.
+        // Binary signatures, MIME allowlists and redirect checks still apply.
+        attempt.stage === "v2_thumbnail_download" ? "image/*" : candidate?.mediaType || "image/*",
         fetcher,
         { cloudId: input.cloudId, pageId: input.pageId, attachmentId: attempt.attachmentId },
       );
