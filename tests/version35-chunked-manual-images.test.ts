@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -16,7 +17,7 @@ function png(size = 24) {
 
 test("本番413を回避する160KiB分割プロトコルを全入力経路が共有する", async () => {
   const [client, server] = await Promise.all([
-    read("components/workspace-client.tsx"), read("lib/manual-image-upload.ts"),
+    readWorkspaceSource(), read("lib/manual-image-upload.ts"),
   ]);
   assert.match(server, /MANUAL_IMAGE_UPLOAD_CHUNK_BYTES = 160 \* 1024/);
   assert.match(client, /fullBytes\.slice\(index \* chunkBytes/);
@@ -110,7 +111,7 @@ test("同名画像はoccurrence由来の別slotで誤登録を防ぐ", async () 
   const source = await read("lib/confluence-manual-images.ts");
   assert.match(source, /counts\.get\(normalizedFilename\)/);
   assert.match(source, /stableSlotKey\(pageId, normalizedFilename, occurrence\)/);
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /!used\.has\(candidate\.slotKey\)/);
   assert.match(client, /一致しない画像が\$\{unmatched\.length\}件/);
 });
@@ -149,14 +150,14 @@ test("同一slot+shaの再試行は既存画像を重複保存しない", async 
 });
 
 test("stale sceneでは結果を別場面UIへ適用しない", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /const uploadSceneId = active\.id/);
   assert.match(client, /selectedSceneIdRef\.current === uploadSceneId/);
   assert.match(client, /encodeURIComponent\(uploadSceneId\)/);
 });
 
 test("slotごとloadingからsuccess/errorへ更新し失敗後再試行できる", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /status: "uploading", error: undefined/);
   assert.match(client, /status: "error", error: `\$\{message\} 以前の画像は保持されています。再試行できます。`/);
   assert.match(client, /setManualUpload\(\{ active: false/);
@@ -177,12 +178,12 @@ test("additive staging migrationとworkspace削除cleanupを含む", async () =>
 test("runtime40・no-storeとversion34以前の主要UIを保持する", async () => {
   const [version, runtime, workspace, dashboard, markdown] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
-    read("components/workspace-client.tsx"), read("components/dashboard-client.tsx"),
+    readWorkspaceSource(), read("components/dashboard/workspace-list.tsx"),
     read("components/markdown-view.tsx"),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(workspace, /実行版:40/);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
+  assert.match(workspace, /WorkspaceGuide/);
   assert.match(workspace, /restoreScene|自分の表示名|invite/i);
   assert.match(dashboard, /workspace-delete-button/);
   assert.match(markdown, /remarkPlotlineBreaks|remarkPlotlineCallouts/);

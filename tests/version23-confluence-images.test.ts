@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -132,7 +133,7 @@ test("proxy binaryはAtlassian redirect後も200 image/pngになりtokenを外�
 test("同期はviewとstorageを取得し、手動fallbackと必要時だけの再認証を提供する", async () => {
   const [sync, client, start, callback, migration] = await Promise.all([
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"),
-    read("components/workspace-client.tsx"),
+    readWorkspaceSource(),
     read("app/api/workspaces/[slug]/confluence/start/route.ts"),
     read("app/api/confluence/callback/route.ts"),
     read("drizzle/0007_rainy_sebastian_shaw.sql"),

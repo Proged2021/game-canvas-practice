@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -56,14 +57,14 @@ test("HTTP・data・blob・内部API参照から新規upload slotを作らない
 });
 
 test("左右の実表示は同じ保存画像resolverを通る", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /resolveDisplayMarkdown\(sceneSource\.local_markdown\)/);
   assert.match(client, /resolveDisplayMarkdown\(active\.markdown\)/);
   assert.match(client, /rewriteLocalMarkdownImageSources\(markdown, manualSlots\)/);
 });
 
 test("個別・一括・貼付・dropは共通uploadを使いローカルpreviewを破棄する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   for (const entry of ["assignSelectedFiles", "pasteFromClipboard", "handleManualPaste", "onDrop"])
     assert.match(client, new RegExp(entry));
   assert.match(client, /URL\.createObjectURL\(file\)/);
@@ -72,7 +73,7 @@ test("個別・一括・貼付・dropは共通uploadを使いローカルpreview
 });
 
 test("差し替え失敗時は旧srcを復元し再試行可能な状態を返す", async () => {
-  const [client, upload] = await Promise.all([read("components/workspace-client.tsx"), read("lib/manual-image-upload.ts")]);
+  const [client, upload] = await Promise.all([readWorkspaceSource(), read("lib/manual-image-upload.ts")]);
   assert.match(client, /src: previousSlots\.get\(item\.slotKey\)\?\.src/);
   assert.match(client, /以前の画像は保持されています。再試行できます/);
   assert.match(upload, /await database\.batch\(\[/);

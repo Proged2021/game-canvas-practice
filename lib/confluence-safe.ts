@@ -313,7 +313,7 @@ function sourceTokens(source: string) {
 
 function attachmentNames(item: ConfluenceAttachmentDescriptor) {
   const values = [item.title, item.fileName, sourceFilename(item.downloadLink)];
-  return new Set(values.filter(Boolean).map(normalizeConfluenceFilename));
+  return new Set(values.filter((value): value is string => typeof value === "string" && value !== "").map(normalizeConfluenceFilename));
 }
 
 export function sanitizeConfluenceHtmlWithAttachments(

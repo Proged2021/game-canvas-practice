@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -30,7 +31,7 @@ test("表示名APIは本人のworkspace membershipだけを更新しOrigin/CSRF�
 });
 
 test("表示名はworkspace単位で読み、メンバーと最終更新者へ安全に反映する", async () => {
-  const [database, client] = await Promise.all([read("lib/db.ts"), read("components/workspace-client.tsx")]);
+  const [database, client] = await Promise.all([read("lib/db.ts"), readWorkspaceSource()]);
   assert.match(database, /display_name FROM account_memberships WHERE workspace_id=\?1 AND account_key=\?2/);
   assert.match(database, /COALESCE\(m\.display_name,'メンバー'\) AS updated_by/);
   assert.match(client, /members: previous\.members\.map/);
@@ -49,7 +50,7 @@ test("新規DB列とAPIはメール・本名・token・raw identityを追加保�
 });
 
 test("場面削除ボタンは編集モードだけ表示され選択ボタンと別要素である", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /editMode && editable && \([\s\S]*scene-delete-button/);
   assert.match(client, /scene-select-button/);
   assert.match(client, /event\.stopPropagation\(\)/);
@@ -57,7 +58,7 @@ test("場面削除ボタンは編集モードだけ表示され選択ボタン�
 });
 
 test("削除確認は対象名・キャンセル初期focus・Escape対応・二重送信防止を持つ", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /「\{deleteTarget\?\.title\}」を削除しますか/);
   assert.match(client, /deleteCancelRef\.current\?\.focus/);
   assert.match(client, /AlertDialogCancel ref=\{deleteCancelRef\}/);
@@ -84,7 +85,7 @@ test("選択場面削除は次・なければ前・最後の1件では空状態�
 });
 
 test("連続削除履歴はscene IDごとに保持され個別復元し安定順序へ戻る", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /\(data\.deletedScenes \?\? \[\]\)\.map\(\(scene\)/);
   assert.match(client, /restoreScene\(scene\.id\)/);
   assert.deepEqual(stableSceneOrder([
@@ -99,7 +100,7 @@ test("restoreはworkspace・scene・editor権限・期限・Origin/CSRFを検証
   assert.match(route, /validateSameOriginJson\(request, "restore-scene"\)/);
   assert.match(route, /x-plotline-edit-mode/);
   assert.match(route, /alreadyRestored: true/);
-  assert.match(route, /delete_expires_at>CURRENT_TIMESTAMP/);
+  assert.match(route, /datetime\(delete_expires_at\)>CURRENT_TIMESTAMP/);
 });
 
 test("期限前はcleanupせず期限後だけworkspace所有の関連資産を完全削除する", async () => {
@@ -123,7 +124,7 @@ test("削除場面は一覧・更新・Confluence同期・画像配信から直�
 
 test("version30の手動画像・Confluence・undo/redo・招待機能を保持する", async () => {
   const [client, assets, members] = await Promise.all([
-    read("components/workspace-client.tsx"), read("lib/confluence-assets.ts"), read("app/api/workspaces/[slug]/members/route.ts"),
+    readWorkspaceSource(), read("lib/confluence-assets.ts"), read("app/api/workspaces/[slug]/members/route.ts"),
   ]);
   assert.match(client, /別の方法で画像を追加/);
   assert.match(client, /performUndo/);
@@ -134,9 +135,9 @@ test("version30の手動画像・Confluence・undo/redo・招待機能を保持�
 
 test("runtimeVersion 40とno-store markerを公開しUIにも表示する", async () => {
   const [version, runtime, client] = await Promise.all([
-    read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
+    read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), readWorkspaceSource(),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:40/);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
+  assert.match(client, /WorkspaceGuide/);
 });

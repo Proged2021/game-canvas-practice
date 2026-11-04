@@ -43,9 +43,13 @@ export async function deleteWorkspaceGraph(
     database.prepare(sql).bind(workspace.id);
 
   const results = await database.batch([
+    byWorkspace("DELETE FROM lllm_browser_job_sessions WHERE job_id IN (SELECT id FROM lllm_bridge_jobs WHERE workspace_id=?1)"),
     byWorkspace("DELETE FROM lllm_bridge_chunks WHERE job_id IN (SELECT id FROM lllm_bridge_jobs WHERE workspace_id=?1)"),
     byWorkspace("DELETE FROM lllm_bridge_jobs WHERE workspace_id=?1"),
+    byWorkspace("DELETE FROM workspace_extension_providers WHERE workspace_id=?1 OR source_workspace_id=?1"),
     byWorkspace("DELETE FROM workspace_extensions WHERE workspace_id=?1"),
+    byWorkspace("DELETE FROM lllm_browser_authorizations WHERE workspace_id=?1"),
+    byWorkspace("DELETE FROM workspace_custom_extensions WHERE workspace_id=?1"),
     byWorkspace(
       `DELETE FROM manual_image_upload_chunks
        WHERE upload_id IN (

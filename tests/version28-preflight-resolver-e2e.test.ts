@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -73,7 +74,7 @@ test("preflight metadata 500相当でもresolverが5 PNGを保存しsync成功�
 
   const [syncSource, uiSource] = await Promise.all([
     read("app/api/workspaces/[slug]/confluence/sync/route.ts"),
-    read("components/workspace-client.tsx"),
+    readWorkspaceSource(),
   ]);
   assert.match(syncSource, /stageSceneAssets/);
   assert.match(syncSource, /asset_generation=excluded\.asset_generation/);
@@ -114,6 +115,6 @@ test("公開runtime markerは34だけをno-storeで返す", async () => {
   ]);
   assert.match(version, /"40"/);
   assert.match(route, /runtimeVersion/);
-  assert.match(route, /cache-control.*no-store/s);
+  assert.match(route, /cache-control[\s\S]*no-store/);
   assert.doesNotMatch(route, /token|email|workspace|scene|attachment/i);
 });

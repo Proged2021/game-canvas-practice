@@ -64,6 +64,14 @@ export async function buildAvailableImageSlots(input: {
 }) {
   const base = extractConfluenceImageSlots(input.syncedHtml);
   if (input.localMarkdown == null) return base;
+  const sourceAliases = new Map<string, string[]>();
+  const sourceUrls = new Map<string, string[]>();
+  for (const match of input.syncedHtml.matchAll(/<img\b[^>]*>/gi)) {
+    const slot = attribute(match[0], "data-confluence-slot");
+    if (!base.some(value => value.slotKey === slot)) continue;
+    sourceAliases.set(slot, [...(sourceAliases.get(slot) ?? []), attribute(match[0], "alt"), attribute(match[0], "title")].filter(Boolean));
+    sourceUrls.set(slot, [...(sourceUrls.get(slot) ?? []), attribute(match[0], "src")].filter(Boolean));
+  }
 
   const slots: Array<{ slotKey: string; label: string }> = [];
   const used = new Set<string>();
@@ -77,8 +85,14 @@ export async function buildAvailableImageSlots(input: {
     const altName = normalizeManualFilename(reference.alt);
     const normalized = sourceName || altName;
     if (!normalized) continue;
-    const existing = base.find((slot) => !used.has(slot.slotKey)
-      && [sourceName, altName].filter(Boolean).includes(normalizeManualFilename(slot.label)));
+    const available = base.filter(slot => !used.has(slot.slotKey));
+    const exact = available.filter(slot => Boolean(reference.source) && sourceUrls.get(slot.slotKey)?.includes(reference.source));
+    const named = available.filter(slot => [sourceName, altName].filter(Boolean).includes(normalizeManualFilename(slot.label)));
+    const aliased = available.filter(slot => Boolean(altName)
+      && sourceAliases.get(slot.slotKey)?.some(alias => normalizeManualFilename(alias) === altName));
+    // Exact source identity wins over names. Filename occurrences keep their
+    // established document order; a display-only alias must be unambiguous.
+    const existing = exact[0] ?? named[0] ?? (aliased.length === 1 ? aliased[0] : undefined);
     if (existing) {
       used.add(existing.slotKey);
       slots.push(existing);

@@ -84,7 +84,7 @@ export async function searchPageAttachmentsByFilename(
     status: response.status,
     attachments: (Array.isArray(body.results) ? body.results : [])
       .map((item) => normalizeAttachment(item, pageId))
-      .filter((item): item is ConfluenceAttachmentDescriptor => Boolean(item)),
+      .filter((item) => item !== null),
   };
 }
 

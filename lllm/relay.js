@@ -3,6 +3,11 @@
   'use strict';
   const nativeFetch = window.fetch.bind(window);
   const slug = document.querySelector('meta[name="lllm-workspace"]').content;
+  const sessionMeta = document.querySelector('meta[name="lllm-session"]');
+  let sessionToken = sessionMeta?.content || '';
+  sessionMeta?.remove();
+  // A shared address contains no reusable launch grant or browser capability.
+  history.replaceState(null,'','/apps/lllm/'+encodeURIComponent(slug)+(location.hash||''));
   const endpoint = '/api/workspaces/' + encodeURIComponent(slug) + '/extensions/lllm';
   const pending = new Set();
   const encoder = new TextEncoder(), decoder = new TextDecoder();
@@ -17,12 +22,15 @@
     if(revoked)return;
     revoked={status:error.status,code:error.code,message:error.message};publicKey=null;
     for(const id of pending)cancelJob(id);
+    closeBrowserSession();
+    sessionToken='';
     window.dispatchEvent(new CustomEvent('lllmaccessrevoked',{detail:{...revoked}}));
   }
   async function json(query,body,signal) {
     if(revoked)throw accessError();
+    if(!sessionToken){const error=Error('ワークスペースの拡張機能から開き直してください。');error.status=404;error.code='LLLM_ENTRY_REQUIRED';revoke(error);throw error;}
     const r=await nativeFetch(endpoint+query,{method:body?'POST':'GET',cache:'no-store',credentials:'same-origin',signal,
-      headers:body?{'Content-Type':'application/json','X-Plotline-Csrf':'lllm-relay'}:{},body:body?JSON.stringify(body):undefined});
+      headers:{'X-Lllm-Session':sessionToken,...(body?{'Content-Type':'application/json','X-Plotline-Csrf':'lllm-relay'}:{})},body:body?JSON.stringify(body):undefined});
     const result=await r.json().catch(()=>({}));
     if(!r.ok){
       const error=Error(result.error||'LLLMとの通信に失敗しました');error.status=r.status;error.code=result.code||'LLLM_HTTP_'+r.status;
@@ -82,8 +90,9 @@
     }
   }
   window.fetch=relay;
-  window.addEventListener('pagehide',()=>{for(const id of pending)cancelJob(id);publicKey=null;});
-  function cancelJob(id){void nativeFetch(endpoint,{method:'POST',keepalive:true,cache:'no-store',headers:{'Content-Type':'application/json','X-Plotline-Csrf':'lllm-relay'},body:JSON.stringify({action:'delete',id})}).catch(()=>{});}
+  window.addEventListener('pagehide',()=>{const error=Error('この画面の利用を終了しました。ワークスペースの拡張機能から開き直してください。');error.status=404;error.code='LLLM_PAGE_CLOSED';revoke(error);});
+  function closeBrowserSession(){if(!sessionToken)return;void nativeFetch(endpoint,{method:'POST',keepalive:true,cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Plotline-Csrf':'lllm-relay','X-Lllm-Session':sessionToken},body:JSON.stringify({action:'closeSession'})}).catch(()=>{});}
+  function cancelJob(id){if(!sessionToken)return;void nativeFetch(endpoint,{method:'POST',keepalive:true,cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Plotline-Csrf':'lllm-relay','X-Lllm-Session':sessionToken},body:JSON.stringify({action:'delete',id})}).catch(()=>{});}
   // Back/forward cache must never resurrect conversation contents or keys.
   window.addEventListener('pageshow',event=>{if(event.persisted)location.reload();});
 })();

@@ -9,16 +9,53 @@ const sources = Object.fromEntries(await Promise.all(['relay', 'studio', 'vault'
 const publicKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
 const settle = async () => { for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve)); };
 
-function relayHarness(handler) {
+function relayHarness(handler, { token = 'a'.repeat(64) } = {}) {
   const window = new EventTarget(), events = [], calls = [];
+  let metaRemoved = false;
+  const navigations = [];
   window.fetch = async (url, options = {}) => { calls.push({ url, options }); return handler(url, options); };
   window.addEventListener('lllmaccessrevoked', event => events.push(event.detail));
-  const context = vm.createContext({ window, document: { querySelector: () => ({ content: 'demo' }) },
+  const context = vm.createContext({ window, document: { querySelector: selector => selector.includes('lllm-session')
+    ? token ? { content: token, remove() { metaRemoved = true; } } : null : { content: 'demo' } },
     crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, URL, Headers, Response, Blob, DOMException,
-    CustomEvent, btoa, atob, location: { origin: 'https://game-canvas.app' }, setTimeout, console });
+    CustomEvent, btoa, atob, location: { origin: 'https://game-canvas.app', hash: '#chat' },
+    history: { replaceState: (_state, _title, url) => navigations.push(url) }, setTimeout, console });
   vm.runInContext(sources.relay, context);
-  return { window, events, calls };
+  return { window, events, calls, navigations, metaRemoved: () => metaRemoved };
 }
+
+test('launch capability leaves the DOM and address, and reaches both base reads and cleanup', async () => {
+  const harness = relayHarness(async (_url, options) => options.method === 'POST'
+    ? Response.json({ error: 'server stopped' }, { status: 503 }) : Response.json({ publicKey }));
+  await assert.rejects(harness.window.fetch('/api/status'), error => error.status === 503);
+  assert.equal(harness.metaRemoved(), true);
+  assert.deepEqual(harness.navigations, ['/apps/lllm/demo#chat']);
+  for (const call of harness.calls) {
+    assert.equal(call.options.headers['X-Lllm-Session'], 'a'.repeat(64));
+    assert.equal(call.options.cache, 'no-store');
+    assert.equal(call.url.includes('a'.repeat(64)), false);
+  }
+  assert.ok(harness.calls.some(call => call.options.body && JSON.parse(call.options.body).action === 'delete'));
+});
+
+test('a page without its in-memory entry capability never calls the relay', async () => {
+  const harness = relayHarness(async () => { throw Error('must not fetch'); }, { token: '' });
+  await assert.rejects(harness.window.fetch('/api/status'), error => error.status === 404 && error.code === 'LLLM_ENTRY_REQUIRED');
+  assert.equal(harness.calls.length, 0);
+  assert.equal(harness.events.length, 1);
+});
+
+test('pagehide closes only the current capability before destroying it and prevents reuse', async () => {
+  const harness = relayHarness(async () => Response.json({ ok: true }));
+  harness.window.dispatchEvent(new Event('pagehide'));
+  assert.equal(harness.calls.length, 1);
+  const close = harness.calls[0];
+  assert.equal(JSON.parse(close.options.body).action, 'closeSession');
+  assert.equal(close.options.keepalive, true);
+  assert.equal(close.options.headers['X-Lllm-Session'], 'a'.repeat(64));
+  await assert.rejects(harness.window.fetch('/api/status'), error => error.status === 404);
+  assert.equal(harness.calls.length, 1);
+});
 
 test('a base authorization denial preserves HTTP metadata, revokes once and blocks new relay jobs', async () => {
   const harness = relayHarness(async (_url, options) => options.method === 'POST'
@@ -82,7 +119,7 @@ for (const status of [401, 403]) {
 }
 
 function uiHarness({ studio = true, fetcher } = {}) {
-  const nodes = new Map(), timers = new Map(), revokedUrls = [], calls = [], navigations = [];
+  const nodes = new Map(), timers = new Map(), revokedUrls = [], calls = [], navigations = [], clicks = [];
   let timerId = 0, urlId = 0;
   class Node {
     constructor(id = '', tag = 'div') { this.id = id; this.tagName = tag.toUpperCase(); this.value = ''; this.hidden = false; this.disabled = false; this.children = []; this.dataset = {}; this.listeners = new Map(); this.attributes = new Map(); this.files = []; this._text = ''; this.className = ''; const classes = new Set(); this.classList = { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) }; }
@@ -91,13 +128,15 @@ function uiHarness({ studio = true, fetcher } = {}) {
     replaceChildren(...children) { this._text = ''; this.children = children; }
     append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
     addEventListener(name, listener) { const listeners = this.listeners.get(name) ?? []; listeners.push(listener); this.listeners.set(name, listeners); }
-    async fire(name, event = {}) { const operations = (this.listeners.get(name) ?? []).map(listener => listener({ target: this, preventDefault() {}, ...event })); if (this['on' + name]) operations.push(this['on' + name](event)); await Promise.all(operations); }
+    async fire(name, event = {}) { event = { target: this, preventDefault() {}, ...event }; const operations = (this.listeners.get(name) ?? []).map(listener => listener(event)); if (this['on' + name]) operations.push(this['on' + name](event)); await Promise.all(operations); }
     setAttribute(name, value) { this.attributes.set(name, value); }
     removeAttribute(name) { this.attributes.delete(name); delete this[name]; }
     querySelector(selector) { if (selector === '.bubble') return this.children.find(child => child.className.startsWith('bubble')) ?? null; return this.children.find(child => child.tagName === selector.toUpperCase()) ?? null; }
     querySelectorAll(selector) { return this.children.filter(child => selector === 'p' ? child.tagName === 'P' : child.tagName === 'BUTTON'); }
     scrollIntoView() {}
-    click() {}
+    click() { clicks.push({ href: this.href, download: this.download }); }
+    select() {}
+    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
     closest() { return this.tagName === 'BUTTON' ? this : null; }
   }
   const node = id => { if (!nodes.has(id)) nodes.set(id, new Node(id)); return nodes.get(id); };
@@ -130,7 +169,7 @@ function uiHarness({ studio = true, fetcher } = {}) {
   const context = vm.createContext(sandbox);
   vm.runInContext(sources.vault, context); sandbox.PrivateImages = window.PrivateImages;
   if (studio) vm.runInContext(sources.studio, context);
-  return { context, window, node, nodes, timers, calls, navigations, revokedUrls, status, secret, chat, privateImages: window.PrivateImages,
+  return { context, window, node, nodes, timers, calls, navigations, revokedUrls, clicks, status, secret, chat, privateImages: window.PrivateImages,
     revoke: (status = 403) => window.dispatchEvent(new CustomEvent('lllmaccessrevoked', { detail: { status, code: 'MEMBERSHIP_REQUIRED', message: '参加状態が変わったため利用できません。' } })) };
 }
 
@@ -163,6 +202,29 @@ test('open chat revocation clears sensitive content, aborts the response, stops 
   assert.deepEqual(harness.navigations, ['/w/demo']);
   assert.equal(harness.calls.length, calls);
 });
+
+for (const failure of ['false', 'throw']) {
+  test(`a failed clipboard fallback (${failure}) destroys its temporary plaintext node`, async () => {
+    const harness = uiHarness(); await settle();
+    harness.node('chatInput').value = 'synthetic prompt';
+    await harness.node('sendChat').fire('click');
+    let temporary;
+    harness.context.document.execCommand = () => {
+      temporary = harness.context.document.body.children.find(child => child.className === 'clipboard');
+      assert.equal(temporary.value, 'synthetic private reply');
+      if (failure === 'throw') throw Error('synthetic copy denial');
+      return false;
+    };
+    await harness.node('copyChat').fire('click');
+    assert.ok(temporary);
+    assert.equal(temporary.value, '');
+    assert.equal(harness.context.document.body.children.includes(temporary), false);
+    assert.match(harness.node('chatStatus').textContent, /選択してコピー/);
+    harness.revoke();
+    await harness.node('copyChat').fire('click');
+    assert.equal(harness.context.document.body.children.length, 0);
+  });
+}
 
 test('a delayed successful status response cannot unlock a revoked screen', async () => {
   let completeStatus;
@@ -222,4 +284,28 @@ test('revocation wipes image keys and blob URLs, and stale private status/archiv
   await Promise.all([archive, refresh]);
   assert.equal(harness.privateImages.ready(), false); assert.equal(harness.node('vaultFiles').children.length, 0);
   await assert.rejects(harness.privateImages.prepare(), /利用権限/);
+});
+
+test('encrypted image downloads use the authenticated fetch relay and revoke their temporary URL on lock', async () => {
+  const harness=uiHarness({studio:false});
+  await harness.privateImages.init({api:async()=>({canUnlock:false,recipients:[]})});
+  const file='/api/private/files/'+ 'f'.repeat(8)+'-1111-2222-3333-'+ 'f'.repeat(12);
+  harness.context.fetch=async(url,options)=>{assert.equal(url,file);assert.equal(options.cache,'no-store');return new Response(new Uint8Array([1,2,3]));};
+  await harness.privateImages.show(file,'generate');
+  assert.equal(harness.node('generateEncryptedDownload').href,'#');
+  await harness.node('generateEncryptedDownload').fire('click');
+  assert.equal(harness.clicks.length,1);assert.match(harness.clicks[0].href,/^blob:/);
+  assert.match(harness.clicks[0].download,/\.aistudio$/);
+  const url=harness.clicks[0].href;harness.privateImages.lock();
+  assert.ok(harness.revokedUrls.includes(url));assert.equal(harness.timers.size,0);
+});
+
+test('a late encrypted download cannot create a file or URL after access revocation', async () => {
+  const harness=uiHarness({studio:false});
+  await harness.privateImages.init({api:async()=>({canUnlock:false,recipients:[]})});
+  await harness.privateImages.show('/api/private/files/synthetic','generate');
+  let complete;harness.context.fetch=async()=>new Promise(resolve=>{complete=resolve;});
+  const downloading=harness.node('generateEncryptedDownload').fire('click');await settle();
+  harness.revoke();complete(new Response(new Uint8Array([1,2,3])));await downloading;
+  assert.deepEqual(harness.clicks,[]);assert.equal(harness.timers.size,0);
 });

@@ -2,6 +2,24 @@ import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { SITE_ORIGIN } from "@/lib/site-urls";
 import { randomToken, hashInviteToken } from "@/lib/secure-invites";
+import { listManagedWorkspaceMembers } from "@/lib/workspace-members";
+
+export async function GET(_request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const auth = await authorizeWorkspace((await params).slug, ["owner"]);
+  if (!auth.ok) {
+    const headers = new Headers(auth.response.headers);
+    headers.set("cache-control", "private, no-store");
+    return new Response(auth.response.body, { status: auth.response.status, headers });
+  }
+  try {
+    const members = await listManagedWorkspaceMembers(db(), auth.membership.workspace_id, auth.user.accountKey);
+    return Response.json(members ? { members, canManage: true } : { error: "メンバーを管理する権限が変更されています。" },
+      { status: members ? 200 : 403, headers: { "cache-control": "private, no-store" } });
+  } catch {
+    return Response.json({ error: "メンバー一覧を読み込めませんでした。時間をおいて再度お試しください。" },
+      { status: 500, headers: { "cache-control": "private, no-store" } });
+  }
+}
 
 export async function POST(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;

@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -5,7 +6,7 @@ import test from "node:test";
 const read = (path: string) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("編集モードの場面一覧をマウス・タッチで上下へスライドできる", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /beginSceneDrag\(event: ReactPointerEvent/);
   assert.match(client, /document\.elementFromPoint/);
   assert.match(client, /onPointerDown=.*beginSceneDrag/);
@@ -15,7 +16,7 @@ test("編集モードの場面一覧をマウス・タッチで上下へスラ�
 });
 
 test("ドラッグハンドルは矢印キーでも並べ替えられ、タッチスクロールとの競合を防ぐ", async () => {
-  const [client, css] = await Promise.all([read("components/workspace-client.tsx"), read("app/globals.css")]);
+  const [client, css] = await Promise.all([readWorkspaceSource(), read("app/globals.css")]);
   assert.match(client, /event\.key !== "ArrowUp" && event\.key !== "ArrowDown"/);
   assert.match(client, /moveScene\(s\.id, event\.key === "ArrowUp" \? -1 : 1\)/);
   assert.match(css, /scene-drag-handle[^}]*touch-action: none/);
@@ -32,7 +33,8 @@ test("並び替えAPIは権限・Origin・編集モード・完全な場面集�
 });
 
 test("並び替え中は多重操作を防ぎ、失敗時は元の順序へ戻す", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /if \(!data \|\| !editable \|\| !editMode \|\| reorderSaving\) return/);
-  assert.match(client, /scenes: previous/);
+  assert.match(client, /scenes: applyScenePositions\(current.scenes, positions\)/);
+  assert.match(client, /applyOrder\(previous\.map/);
 });

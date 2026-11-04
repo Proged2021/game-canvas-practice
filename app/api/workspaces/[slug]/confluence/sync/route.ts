@@ -203,7 +203,7 @@ async function run(request: Request, slug: string, checkOnly: boolean) {
         token,
       });
       capabilityDiagnostic = capability.ok ? null : capability.diagnostic;
-      capabilityWarnings = "warnings" in capability ? capability.warnings : [];
+      capabilityWarnings = "warnings" in capability ? capability.warnings ?? [] : [];
       if (!("page" in capability) || !capability.page) {
         const diagnostic = withLogicalImageCount(capability.diagnostic, 0);
         console.info("CONFLUENCE_IMAGE_CAPABILITY", diagnostic);

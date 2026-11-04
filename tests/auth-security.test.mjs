@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -17,18 +18,19 @@ test("SIWC requires an authenticated identity and uses safe return paths", () =>
 });
 
 test("authenticated users reach onboarding instead of ACCESS RESTRICTED", async () => {
-  const [page, dashboard] = await Promise.all([read("app/page.tsx"), read("components/dashboard-client.tsx")]);
+  const [page, dashboard, list] = await Promise.all([read("app/page.tsx"), read("components/dashboard-client.tsx"), read("components/dashboard/workspace-list.tsx")]);
   assert.match(page, /if \(!user\)[\s\S]*LoginLanding/);
   assert.match(page, /principalForUser\(user\)/);
   assert.match(page, /listWorkspaces\(principal\.accountKey\)/);
   assert.doesNotMatch(page, /AccessDeniedLanding|authorizeApplicationUser/);
-  assert.match(dashboard, /新しいワークスペースを作成/);
-  assert.match(dashboard, /招待リンクから参加/);
+  assert.match(dashboard, /<WorkspaceList/);
+  assert.match(list, /新しいワークスペースを作成/);
+  assert.match(list, /招待リンクから参加/);
 });
 
 test("account keys use server-secret HMAC with user id first and never leave APIs", async () => {
   const [principal, database, workspaceClient] = await Promise.all([
-    read("lib/account-principal.ts"), read("lib/db.ts"), read("components/workspace-client.tsx"),
+    read("lib/account-principal.ts"), read("lib/db.ts"), readWorkspaceSource(),
   ]);
   assert.match(principal, /env\.TOKEN_ENCRYPTION_KEY/);
   assert.match(principal, /user\.userId\?\.trim\(\)/);

@@ -61,6 +61,8 @@ function fixture() {
   run(`INSERT INTO confluence_connections (workspace_id,cloud_id,access_token_ciphertext,refresh_token_ciphertext)
     VALUES (?,'cloud-test','must-not-copy-access','must-not-copy-refresh')`, W);
   run("INSERT INTO workspace_extensions VALUES (?,'lllm',1)", W);
+  run("INSERT INTO workspace_extension_providers(workspace_id,extension_id,source_workspace_id) VALUES (?,'lllm',?)", W, W);
+  run("INSERT INTO workspace_custom_extensions (id,workspace_id,name,url) VALUES (? ,?,'private tool','https://private.example/tool')", randomUUID(), W);
   run(`INSERT INTO secure_workspace_invites (id,workspace_id,token_hash,role,expires_at,created_by_account_key)
     VALUES ('invite',?,'must-not-copy-invite','viewer','2999-01-01','alice')`, W);
   run(`INSERT INTO workspace_invitations (id,workspace_id,email,role,invited_by)
@@ -165,7 +167,7 @@ test("copies active scene content and image bytes into an independently owned wo
   assert.equal(owners.length, 1);
   assert.equal(owners[0].account_key, "alice");
   assert.equal(owners[0].role, "owner");
-  for (const table of ["members", "confluence_connections", "workspace_extensions", "secure_workspace_invites", "workspace_invitations", "workspace_join_requests", "oauth_states", "lllm_bridge_jobs", "manual_image_upload_sessions"]) {
+  for (const table of ["members", "confluence_connections", "workspace_extensions", "workspace_extension_providers", "workspace_custom_extensions", "secure_workspace_invites", "workspace_invitations", "workspace_join_requests", "oauth_states", "lllm_bridge_jobs", "manual_image_upload_sessions"]) {
     assert.equal(f.count(table, workspaceId), 0, table);
   }
   assert.ok(f.queries.some((query) => /INSERT INTO scene_confluence_asset_chunks[\s\S]*SELECT/i.test(query.sql)), "blobs copy inside SQLite");

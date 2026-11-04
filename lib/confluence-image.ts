@@ -1,6 +1,35 @@
 import { MAX_CONFLUENCE_IMAGE_BYTES, SAFE_IMAGE_MEDIA_TYPES } from "./confluence-safe.ts";
 
 const MAX_REDIRECTS = 3;
+function discardBody(response: Response) {
+  void response.body?.cancel().catch(() => {});
+}
+
+async function readImageBytes(response: Response): Promise<ArrayBuffer | null> {
+  if (!response.body) return new ArrayBuffer(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength > MAX_CONFLUENCE_IMAGE_BYTES - length) {
+        void reader.cancel().catch(() => {});
+        return null;
+      }
+      length += value.byteLength;
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes.buffer;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export type ResolverHttpTrace = {
   status: number;
   hostCategory: string;
@@ -134,6 +163,7 @@ export async function fetchAtlassianAttachmentBinary(
     });
     trace.push({ status: response.status, hostCategory: category, sentAuthorization: gatewayApi, signedQuery });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
+      discardBody(response);
       const location = response.headers.get("location");
       if (!location)
         return { ok: false, code: "DOWNLOAD_REDIRECT_MISSING", status: 502, trace };
@@ -145,13 +175,15 @@ export async function fetchAtlassianAttachmentBinary(
       const nextUrl = validHttpsUrl(next);
       const nextCategory = atlassianHostCategory(next);
       const nextGatewayApi = nextCategory === "oauth_gateway" && trustedGatewayStart(next, context);
-      const nextSignedDelivery = Boolean(nextUrl) && nextCategory === "oauth_gateway" && hasSignedDeliveryQuery(nextUrl);
+      const nextSignedDelivery = nextUrl !== null && nextCategory === "oauth_gateway" && hasSignedDeliveryQuery(nextUrl);
       if (!nextUrl || !(["atlassian_media", "atl_paas_media"].includes(nextCategory) || nextGatewayApi || nextSignedDelivery))
         return { ok: false, code: "DOWNLOAD_REDIRECT_UNSAFE", status: 502, trace };
       current = next;
       continue;
     }
-    if (!response.ok) return {
+    if (!response.ok) {
+      discardBody(response);
+      return {
       ok: false,
       code: response.status === 401
         ? (gatewayApi ? "API_TOKEN_INVALID" : "CDN_UNAUTHORIZED")
@@ -160,12 +192,17 @@ export async function fetchAtlassianAttachmentBinary(
           : "ATTACHMENT_DOWNLOAD_FAILED",
       status: response.status,
       trace,
-    };
+      };
+    }
     const declaredLength = Number(response.headers.get("content-length") ?? 0);
-    if (declaredLength > MAX_CONFLUENCE_IMAGE_BYTES)
+    if (declaredLength > MAX_CONFLUENCE_IMAGE_BYTES) {
+      discardBody(response);
       return { ok: false, code: "ATTACHMENT_TOO_LARGE", status: 413, trace };
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength > MAX_CONFLUENCE_IMAGE_BYTES)
+    }
+    // Content-Length may be missing or inaccurate, including after decompression.
+    // Stop reading at the limit instead of buffering the entire remote response.
+    const bytes = await readImageBytes(response);
+    if (bytes === null)
       return { ok: false, code: "ATTACHMENT_TOO_LARGE", status: 413, trace };
     const detected = detectedImageMime(new Uint8Array(bytes));
     const declared = (response.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();

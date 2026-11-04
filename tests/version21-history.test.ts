@@ -1,5 +1,5 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   createSceneHistory,
@@ -58,10 +58,7 @@ test("履歴は場面ごとに分離し最大100件に制限する", () => {
 });
 
 test("編集モード限定UI、自動保存、ショートカットを実装している", async () => {
-  const client = await readFile(
-    new URL("../components/workspace-client.tsx", import.meta.url),
-    "utf8",
-  );
+  const client = await readWorkspaceSource();
   assert.match(client, /\{editMode && editable && \(/);
   assert.match(client, /aria-label="戻る"/);
   assert.match(client, /aria-label="進める"/);

@@ -3,7 +3,8 @@ import { LLLM_HTML } from "@/lib/lllm-html";
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
-export function lllmPage(slug: string, name: string) {
+export function lllmPage(slug: string, name: string, sessionToken: string) {
   return LLLM_HTML.replaceAll("__LLLM_WORKSPACE__", () => encodeURIComponent(slug))
-    .replaceAll("__LLLM_NAME__", () => escapeHtml(name));
+    .replaceAll("__LLLM_NAME__", () => escapeHtml(name))
+    .replace("<head>", () => `<head><meta name="lllm-session" content="${escapeHtml(sessionToken)}">`);
 }

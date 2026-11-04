@@ -1,7 +1,7 @@
 window.PrivateImages=(()=>{
  const $=id=>document.getElementById(id);
  let api,info=null,key=null,session=null,working=false,epoch=0,revoked=false;
- const pending=new Map(),displayUrls=new Map(),displayTimers=new Map(),downloads=[];let viewer=null;
+ const pending=new Map(),displayUrls=new Map(),displayTimers=new Map(),downloads=[],downloadTimers=new Map();let viewer=null;
  const note=(text,error=false)=>{if(revoked)return;$('vaultStatus').textContent=text;$('vaultStatus').className='notice'+(error?' error':'');};
  function fileNote(text,error=false){if(revoked)return;$('imageOpenStatus').textContent=text;$('imageOpenStatus').className='notice'+(error?' error':'');}
  function clearDisplay(mode){
@@ -23,6 +23,7 @@ window.PrivateImages=(()=>{
   if(session)api('/api/private/session/release',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({id:session.id})}).catch(()=>{});
   epoch++;key?.secret.fill(0);session?.secret.fill(0);key=session=null;pending.clear();
   for(const url of downloads)URL.revokeObjectURL(url);downloads.length=0;
+  for(const timer of downloadTimers.values())clearTimeout(timer);downloadTimers.clear();
   for(const mode of ['generate','edit'])clearDisplay(mode);clearViewer();render();
  }
  function clear(){
@@ -142,7 +143,18 @@ window.PrivateImages=(()=>{
   }
   $(mode+'UnlockResult').hidden=false;$(mode+'ViewResult').hidden=!info?.canUnlock;
   $(mode+'ResultHint').textContent=info?.canUnlock?'画像の準備ができました。「この画像を開く」から、送信先の鍵を選ぶと表示できます。':'画像は暗号化して送信先へ届きます。表示は外部端末で行ってください。';
-  $(mode+'EncryptedDownload').href=file;$(mode+'EncryptedDownload').download=file.split('/').pop()+'.aistudio';return false;
+  const download=$(mode+'EncryptedDownload');download.href='#';download.onclick=event=>{event.preventDefault();return downloadEncrypted(file,download);};return false;
+ }
+ async function downloadEncrypted(file,button){
+  if(revoked||button.disabled)return;const start=epoch;button.disabled=true;let bytes;
+  try{
+   // Native anchor navigation bypasses the authenticated, encrypted fetch relay.
+   const response=await fetch(file,{cache:'no-store'});if(!response.ok)throw Error('保管期限が切れたため保存できません。');
+   bytes=new Uint8Array(await response.arrayBuffer());if(revoked||start!==epoch)return;
+   const url=URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'}));downloads.push(url);
+   const link=document.createElement('a');link.href=url;link.download=file.split('/').pop()+'.aistudio';link.click();
+   downloadTimers.set(url,setTimeout(()=>{URL.revokeObjectURL(url);downloadTimers.delete(url);const index=downloads.indexOf(url);if(index>=0)downloads.splice(index,1);},60000));
+  }catch(e){if(!revoked&&start===epoch)note(e.message,true);}finally{bytes?.fill(0);button.disabled=revoked;}
  }
  async function archive(){
   const recipient=$('vaultRecipient').value;if(revoked||!recipient)return;const start=epoch,data=await api('/api/private/files?recipient='+encodeURIComponent(recipient)),container=$('vaultFiles');if(revoked||start!==epoch)return;container.replaceChildren();
@@ -150,7 +162,7 @@ window.PrivateImages=(()=>{
   for(const file of data.files){
    const row=document.createElement('div');row.className='vaultrow';const label=document.createElement('span');label.textContent=new Date(file.createdAt).toLocaleString('ja-JP')+' · '+(file.mode==='edit'?'編集':'生成');row.append(label);
    if(info.canUnlock){const button=document.createElement('button');button.className='secondary';button.textContent='画像を表示';button.onclick=()=>openViewer({file:'/api/private/files/'+file.id,mode:file.mode});row.append(button);}
-   const download=document.createElement('a');download.href='/api/private/files/'+file.id;download.download=file.id+'.aistudio';download.textContent='暗号化したまま保存';row.append(download);container.append(row);
+   const download=document.createElement('button');download.className='secondary';download.type='button';download.textContent='暗号化したまま保存';download.onclick=()=>downloadEncrypted('/api/private/files/'+file.id,download);row.append(download);container.append(row);
   }
  }
  async function submit(mode,values){

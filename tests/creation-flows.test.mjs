@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -5,20 +6,27 @@ import test from "node:test";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("dashboard exposes both workspace creation entry points", async () => {
-  const [source, page] = await Promise.all([
+  const [dashboard, header, list, dialog, editor, page] = await Promise.all([
     read("components/dashboard-client.tsx"),
+    read("components/dashboard/dashboard-header.tsx"),
+    read("components/dashboard/workspace-list.tsx"),
+    read("components/dashboard/workspace-editor-dialog.tsx"),
+    read("components/dashboard/use-workspace-editor.ts"),
     read("app/page.tsx"),
   ]);
 
-  assert.match(source, /ワークスペースを作成/);
-  assert.match(source, /新しいワークスペースを作成/);
-  assert.match(source, /htmlFor="workspace-name"/);
-  assert.match(source, /htmlFor="workspace-slug"/);
-  assert.match(source, /if \(creating\) return/);
-  assert.match(source, /disabled=\{creating\}/);
-  assert.doesNotMatch(source, /from "next\/link"/);
-  assert.match(source, /<a[\s\S]*href=\{`\/w\/\$\{item\.slug\}`\}/);
-  assert.match(source, /aria-label=\{`\$\{item\.name\}を開く`\}/);
+  assert.match(header, /ワークスペースを作成/);
+  assert.match(list, /新しいワークスペースを作成/);
+  assert.match(dialog, /htmlFor="workspace-name"/);
+  assert.match(dialog, /htmlFor="workspace-slug"/);
+  assert.match(editor, /if \(creating\) return/);
+  assert.match(dialog, /disabled=\{creating\}/);
+  assert.doesNotMatch(list, /from "next\/link"/);
+  assert.match(list, /<a[\s\S]*href=\{`\/w\/\$\{item\.slug\}`\}/);
+  assert.match(list, /aria-label=\{`\$\{item\.name\}を開く`\}/);
+  assert.match(dashboard, /<DashboardHeader[\s\S]*showCreateDialog=\{editor\.showCreateDialog\}/);
+  assert.match(dashboard, /<WorkspaceList[\s\S]*showCreateDialog=\{editor\.showCreateDialog\}/);
+  assert.match(dashboard, /<WorkspaceEditorDialog controller=\{editor\}/);
   assert.match(page, /await listWorkspaces\(principal\.accountKey\)/);
   assert.match(page, /initialWorkspaces=\{initialWorkspaces\}/);
 });
@@ -36,7 +44,7 @@ test("workspace creation persists the workspace and owner together", async () =>
 
 test("scene creation exposes empty and persistent editor flows", async () => {
   const [client, route, page] = await Promise.all([
-    read("components/workspace-client.tsx"),
+    readWorkspaceSource(),
     read("app/api/workspaces/[slug]/scenes/route.ts"),
     read("app/w/[slug]/page.tsx"),
   ]);
@@ -57,12 +65,12 @@ test("scene creation exposes empty and persistent editor flows", async () => {
 
 test("editing, permissions, responsive layout, and accessibility stay guarded", async () => {
   const [client, route, styles] = await Promise.all([
-    read("components/workspace-client.tsx"),
+    readWorkspaceSource(),
     read("app/api/workspaces/[slug]/scenes/route.ts"),
     read("app/globals.css"),
   ]);
 
-  assert.match(client, /queuedSceneIds/);
+  assert.match(client, /new SceneDraftSaver<Scene>/);
   assert.match(client, /aria-live="polite"/);
   assert.match(client, /role="alert"/);
   assert.match(client, /aria-label="編集モード"/);

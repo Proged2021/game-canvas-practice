@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -110,15 +111,15 @@ test("同期・取得・削除・画像proxyはworkspaceとsceneの組を強制�
 });
 
 test("場面切替は旧本文を消去し競合応答を無視し、設定入口は場面内だけ", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /const sequence = \+\+sourceRequestSequence\.current/);
   assert.match(client, /const controller = new AbortController\(\)/);
   assert.match(client, /setSceneSource\(null\)/);
   assert.match(client, /sequence !== sourceRequestSequence\.current/);
   assert.match(client, /return \(\) => controller\.abort\(\)/);
-  assert.match(client, /この場面にはConfluenceページが設定されていません/);
+  assert.match(client, /参考にするストーリーを表示できます/);
   assert.match(client, /editMode && editable && \(/);
-  assert.match(client, /Confluenceを追加/);
-  assert.match(client, /Confluenceを変更/);
+  assert.match(client, /参考ページを追加/);
+  assert.match(client, /参考ページの設定/);
   assert.doesNotMatch(client, /接続設定/);
 });

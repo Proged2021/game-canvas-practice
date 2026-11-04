@@ -1,3 +1,4 @@
+import { readWorkspaceFeature, readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -48,7 +49,7 @@ test("ローカル本文を基準に画像管理slotを追加・削除し右本�
 });
 
 test("ローカル編集UIから画像追加・変更・削除を同じchunk uploadへ接続する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /ローカル本文の画像操作/);
   assert.match(client, /> 画像を追加/);
   assert.match(client, /addLocalStoryImage\(file\)/);
@@ -59,7 +60,7 @@ test("ローカル編集UIから画像追加・変更・削除を同じchunk upl
 });
 
 test("追加は本文保存・slot再取得・uploadの順で画像管理へ同期する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceFeature("local-story-images.ts");
   const body = client.slice(client.indexOf("async function addLocalStoryImage"), client.indexOf("async function removeLocalStoryImage"));
   assert.ok(body.indexOf("persistLocalStory") < body.indexOf("loadManualImageContext"));
   assert.ok(body.indexOf("loadManualImageContext") < body.indexOf("uploadManualImages"));
@@ -78,7 +79,7 @@ test("削除保存は現行slotだけを新世代へ原子的に残し孤立画�
 
 test("差し替え失敗時の旧画像保持と既存の認可・CSRF・画像形式制約を維持する", async () => {
   const [client, upload, assetRoute] = await Promise.all([
-    read("components/workspace-client.tsx"),
+    readWorkspaceSource(),
     read("lib/manual-image-upload.ts"),
     read("app/api/workspaces/[slug]/scenes/[sceneId]/confluence/assets/[assetKey]/route.ts"),
   ]);

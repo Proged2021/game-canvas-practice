@@ -2,6 +2,7 @@ export type LocalImageSlot = {
   slotKey: string;
   label: string;
   src?: string | null;
+  aliases?: string[];
 };
 
 export type LocalMarkdownImage = {
@@ -56,6 +57,13 @@ function createSlotMatcher(slots: LocalImageSlot[], includeMissing = false) {
         const label = normalizeLocalImageFilename(slot.label);
         return Boolean(label) && (label === altName || label === sourceName);
       });
+    }
+    if (!match && (altName || sourceName)) {
+      const aliases = candidates.filter(slot => !used.has(slot.slotKey) && (slot.aliases ?? []).some(value => {
+        const name = normalizeLocalImageFilename(value);
+        return Boolean(name) && (name === altName || name === sourceName);
+      }));
+      if (aliases.length === 1) match = aliases[0];
     }
     if (match) used.add(match.slotKey);
     return match ?? null;

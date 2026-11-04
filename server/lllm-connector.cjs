@@ -4,6 +4,10 @@ const {spawnSync}=require('node:child_process');
 const {Readable,Writable}=require('node:stream');
 const CHUNK=180000,MAX_WIRE=64*1024*1024;
 const allowed=(method,p)=>{
+ if(typeof p!=='string')return false;
+ // The archive UI selects an existing 32-byte recipient identifier. No other
+ // query syntax, duplicated parameter or encoded path is passed to the server.
+ if(method==='GET'&&/^\/api\/private\/files\?recipient=[a-f0-9]{64}$/.test(p))return true;
  if(p.includes('?')||p.includes('#'))return false;
  if(method==='GET')return p==='/api/status'||p==='/api/private/status'||p==='/api/private/files'||/^\/api\/private\/(?:jobs|files)\/[a-f0-9-]{36}$/.test(p);
  return method==='POST'&&(new Set(['/api/action','/api/chat/session','/api/chat','/api/queue/tickets','/api/private/session','/api/private/session/release','/api/private/reference','/api/private/jobs']).has(p)||/^\/api\/queue\/tickets\/[a-f0-9-]{36}\/(?:heartbeat|release|cancel)$/.test(p)||/^\/api\/private\/files\/[a-f0-9-]{36}\/viewed$/.test(p));
@@ -19,6 +23,7 @@ function sealResponse(packet,key,id){
  try{const cipher=crypto.createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(Buffer.from('lllm-v1:res:'+id));return Buffer.concat([iv,cipher.update(plain),cipher.final(),cipher.getAuthTag()]);}finally{plain.fill(0);}
 }
 async function invoke(packet,account,id,ctx,signal){
+ if(signal.aborted)throw Error('Cancelled');
  if(!allowed(packet.method,packet.path)||typeof packet.body!=='string'||packet.body.length>30*1024*1024)throw Error('Disallowed operation');
  const bytes=Buffer.from(packet.body,'base64');packet.body='';
  const req=Readable.from(bytes.length?[bytes]:[]);
@@ -36,8 +41,9 @@ async function invoke(packet,account,id,ctx,signal){
  const abort=()=>{req.destroy();res.destroy(Error('Cancelled'));};signal.addEventListener('abort',abort,{once:true});
  try{
   const finished=new Promise((resolve,reject)=>{res.once('finish',resolve);res.once('error',reject);});
-  const dispatched=Promise.resolve().then(()=>ctx.dispatch(req,res)).catch(e=>{res.destroy(e);throw e;});
+  const dispatched=Promise.resolve().then(()=>{if(signal.aborted)throw Error('Cancelled');return ctx.dispatch(req,res);}).catch(e=>{res.destroy(e);throw e;});
   await Promise.all([finished,dispatched]);
+  if(signal.aborted)throw Error('Cancelled');
   let data=Buffer.concat(buffers);
   try{
    if(packet.path==='/api/status'&&status===200){const s=JSON.parse(data.toString());data.fill(0);data=Buffer.from(JSON.stringify({current:s.current,models:s.models,memory:s.memory,job:s.job,lastJob:s.lastJob,chatBusy:s.chatBusy,queueRunning:s.queueRunning,queuePending:s.queuePending,imageRunning:s.imageRunning,privateImageBusy:s.privateImageBusy,scheduler:s.scheduler,textPrivacy:s.textPrivacy,actionToken:'workspace'}));}
@@ -48,6 +54,9 @@ async function invoke(packet,account,id,ctx,signal){
 }
 
 module.exports=function startWorkspaceRelay(ctx){
+ // An ambient TLS bypass must never expose the connector credential. This
+ // bridge has no insecure mode; keep it stopped until verification is enabled.
+ if(process.env.NODE_TLS_REJECT_UNAUTHORIZED==='0'){console.error('Workspace LLLM TLS verification is disabled');return {close(){}};}
  const configPath=path.join(ctx.root,'state','workspace-lllm.dpapi');
  if(!fs.existsSync(configPath))return {close(){}};
  const script="$ErrorActionPreference='Stop';$null=[Reflection.Assembly]::LoadWithPartialName('System.Security');$p=[IO.File]::ReadAllBytes($env:LLLM_CONFIG_PATH);$v=[Security.Cryptography.ProtectedData]::Unprotect($p,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);try{[Console]::Write([Text.Encoding]::UTF8.GetString($v))}finally{[Array]::Clear($v,0,$v.Length)}";
@@ -57,7 +66,7 @@ module.exports=function startWorkspaceRelay(ctx){
  const url=new URL(cfg.origin);if(url.protocol!=='https:'||url.origin!=='https://game-canvas.app')return {close(){}};
  const privateKey=crypto.createPrivateKey(cfg.privateKey);cfg.privateKey='';
  const tasks=new Map();let stopped=false,booted=false;
- async function call(data){const r=await fetch(url.origin+'/api/lllm-connector',{method:'POST',headers:{authorization:'Bearer '+cfg.token,'content-type':'application/json'},body:JSON.stringify(data),cache:'no-store',signal:AbortSignal.timeout(25000)});if(!r.ok)throw Error('Relay unavailable');return r.json();}
+ async function call(data){const r=await fetch(url.origin+'/api/lllm-connector',{method:'POST',headers:{authorization:'Bearer '+cfg.token,'content-type':'application/json'},body:JSON.stringify(data),cache:'no-store',redirect:'error',signal:AbortSignal.timeout(25000)});if(!r.ok)throw Error('Relay unavailable');return r.json();}
  async function processJob(job,controller){let wire,key,response;
   try{
    const chunks=[];for(let part=0;part<job.request_parts;part++){if(controller.signal.aborted)throw Error('Cancelled');chunks.push((await call({action:'read',id:job.id,part})).ciphertext);}

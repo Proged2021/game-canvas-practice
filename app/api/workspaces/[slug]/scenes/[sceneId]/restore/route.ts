@@ -25,9 +25,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
   const nextRevision = scene.revision + 1;
   const statements = [];
   if (collision) statements.push(database.prepare(`UPDATE scenes SET position=position+1
-    WHERE workspace_id=?1 AND deleted_at IS NULL AND position>=?2`).bind(auth.membership.workspace_id, scene.position));
+    WHERE workspace_id=?1 AND deleted_at IS NULL AND position>=?2
+      AND EXISTS (SELECT 1 FROM scenes target WHERE target.id=?3 AND target.workspace_id=?1
+        AND target.deleted_at IS NOT NULL AND datetime(target.delete_expires_at)>CURRENT_TIMESTAMP)`)
+    .bind(auth.membership.workspace_id, scene.position, sceneId));
   statements.push(database.prepare(`UPDATE scenes SET deleted_at=NULL,delete_expires_at=NULL,deleted_by_account_key=NULL,
-      revision=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2 AND workspace_id=?3 AND deleted_at IS NOT NULL AND delete_expires_at>CURRENT_TIMESTAMP`)
+      revision=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2 AND workspace_id=?3 AND deleted_at IS NOT NULL AND datetime(delete_expires_at)>CURRENT_TIMESTAMP`)
     .bind(nextRevision, sceneId, auth.membership.workspace_id));
   const result = await database.batch(statements);
   const restored = result.at(-1);
@@ -35,7 +38,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
   const member = await database.prepare(`SELECT display_name FROM account_memberships
     WHERE workspace_id=?1 AND ('account:' || account_key)=?2`).bind(auth.membership.workspace_id, scene.updated_by)
     .first<{ display_name: string | null }>();
-  return Response.json({ ok: true, scene: {
+  const positions = await database.prepare(`SELECT id,position FROM scenes
+    WHERE workspace_id=?1 AND deleted_at IS NULL ORDER BY position,id`).bind(auth.membership.workspace_id)
+    .all<{ id: string; position: number }>();
+  return Response.json({ ok: true, positions: positions.results, scene: {
     id: scene.id, title: scene.title, confluence_page_url: scene.confluence_page_url,
     markdown: scene.markdown, position: scene.position, revision: nextRevision,
     updated_by: member?.display_name ?? "メンバー", updated_at: new Date().toISOString(),

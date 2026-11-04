@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -55,7 +56,7 @@ test("join requests and decisions are isolated to the selected workspace", async
 
 test("owner and applicant see only a random confirmation code, not identity claims", async () => {
   const [client, database, join] = await Promise.all([
-    read("components/workspace-client.tsx"), read("lib/db.ts"), read("app/api/join-requests/route.ts"),
+    readWorkspaceSource(), read("lib/db.ts"), read("app/api/join-requests/route.ts"),
   ]);
   assert.match(client, /確認コード/);
   assert.match(database, /confirmation_code/);

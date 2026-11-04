@@ -382,6 +382,25 @@ export const workspaceExtensions = sqliteTable("workspace_extensions", {
   workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
   extensionId: text("extension_id").notNull(), enabled: integer("enabled").notNull().default(0),
 }, t => [primaryKey({ columns: [t.workspaceId, t.extensionId] })]);
+export const workspaceExtensionProviders = sqliteTable("workspace_extension_providers", {
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  extensionId: text("extension_id").notNull(),
+  sourceWorkspaceId: text("source_workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [primaryKey({ columns: [table.workspaceId, table.extensionId] }),
+  index("workspace_extension_providers_source").on(table.sourceWorkspaceId)]);
+export const workspaceCustomExtensions = sqliteTable("workspace_custom_extensions", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  url: text("url").notNull(),
+  groupName: text("group_name").notNull().default("未分類"),
+  enabled: integer("enabled").notNull().default(1),
+  revision: integer("revision").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [index("workspace_custom_extensions_scope").on(table.workspaceId, table.groupName, table.name)]);
 export const lllmBridgeJobs = sqliteTable("lllm_bridge_jobs", {
   id: text("id").primaryKey(), workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
   accountKey: text("account_key").notNull(), state: text("state").notNull().default("uploading"),
@@ -395,3 +414,16 @@ export const lllmBridgeChunks = sqliteTable("lllm_bridge_chunks", {
 export const lllmBridgeState = sqliteTable("lllm_bridge_state", {
   id: text("id").primaryKey(), lastSeen: integer("last_seen").notNull(),
 });
+export const lllmBrowserAuthorizations = sqliteTable("lllm_browser_authorizations", {
+  tokenHash: text("token_hash").primaryKey(),
+  kind: text("kind", { enum: ["grant", "session"] }).notNull(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  accountKey: text("account_key").notNull(),
+  createdAt: integer("created_at").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+}, table => [index("lllm_browser_authorizations_expiry").on(table.expiresAt),
+  index("lllm_browser_authorizations_actor").on(table.workspaceId, table.accountKey, table.kind, table.expiresAt)]);
+export const lllmBrowserJobSessions = sqliteTable("lllm_browser_job_sessions", {
+  jobId: text("job_id").primaryKey().references(() => lllmBridgeJobs.id, { onDelete: "cascade" }),
+  sessionHash: text("session_hash").notNull().references(() => lllmBrowserAuthorizations.tokenHash, { onDelete: "cascade" }),
+}, table => [index("lllm_browser_job_sessions_session").on(table.sessionHash)]);

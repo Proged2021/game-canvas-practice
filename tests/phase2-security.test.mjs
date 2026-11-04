@@ -1,3 +1,4 @@
+import { readWorkspaceFeature, readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -25,9 +26,12 @@ test("OAuth status is secret-safe and uses the exact production callback", async
 });
 
 test("OAuth starts from a native new-tab link instead of an embedded-frame navigation", async () => {
-  const client = await read("components/workspace-client.tsx");
-  const urls = await read("lib/site-urls.ts");
-  assert.match(client, /import \{ CONFLUENCE_CALLBACK_URL, SITE_ORIGIN \} from "@\/lib\/site-urls"/);
+  const [client, settings, urls] = await Promise.all([
+    readWorkspaceFeature("confluence-connect-link.tsx"), readWorkspaceFeature("confluence-settings-dialog.tsx"), read("lib/site-urls.ts"),
+  ]);
+  assert.match(client, /import \{ SITE_ORIGIN \} from "@\/lib\/site-urls"/);
+  assert.match(settings, /import \{ CONFLUENCE_CALLBACK_URL \} from "@\/lib\/site-urls"/);
+  assert.match(settings, /<code>\{CONFLUENCE_CALLBACK_URL\}<\/code>/);
   assert.match(urls, /https:\/\/game-canvas\.app/);
   assert.match(client, /authStartUrl = `\$\{SITE_ORIGIN\}\/api\/workspaces\/\$\{encodeURIComponent\(slug\)\}\/confluence\/start/);
   assert.match(client, /sceneId=\$\{encodeURIComponent\(sceneId\)\}/);
@@ -68,7 +72,7 @@ test("sync uses v2 view format, safe errors and server-side token access", async
 });
 
 test("invitations use hashed one-time URLs and explicit owner approval", async () => {
-  const [route, client, schema] = await Promise.all([read("app/api/workspaces/[slug]/members/route.ts"), read("components/workspace-client.tsx"), read("db/schema.ts")]);
+  const [route, client, schema] = await Promise.all([read("app/api/workspaces/[slug]/members/route.ts"), readWorkspaceSource(), read("db/schema.ts")]);
   assert.match(route, /authorizeWorkspace\([^\n]+\["owner"\]\)/);
   assert.match(route, /body\.role !== "editor" && body\.role !== "viewer"/);
   assert.match(route, /status='cancelled'/);

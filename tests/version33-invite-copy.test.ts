@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -64,7 +65,7 @@ test("Clipboard API成功時は完全な招待URLを正確に1回だけ書き込
 test("Clipboard permission拒否時は同じ完全URLをDOM fallbackで1回コピーして片付ける", async () => {
   const { documentObject, state } = fakeDocument(true);
   const result = await copyTextWithFallback(INVITE_URL, {
-    navigator: { clipboard: { writeText: async () => { throw new DOMException("denied", "NotAllowedError"); } } } as Navigator,
+    navigator: { clipboard: { writeText: async (value: string): Promise<void> => { assert.equal(value, INVITE_URL); throw new DOMException("denied", "NotAllowedError"); } } } as Navigator,
     document: documentObject,
   });
   assert.equal(result, "fallback");
@@ -87,7 +88,7 @@ test("Clipboard API undefined・iframe相当でもDOM fallbackを使用する", 
 test("Clipboard API例外後にfallbackも失敗した場合はfailedを返してDOMを必ず片付ける", async () => {
   const { documentObject, state } = fakeDocument(false);
   const result = await copyTextWithFallback(INVITE_URL, {
-    navigator: { clipboard: { writeText: async () => { throw new Error("unavailable"); } } } as Navigator,
+    navigator: { clipboard: { writeText: async (value: string): Promise<void> => { assert.equal(value, INVITE_URL); throw new Error("unavailable"); } } } as Navigator,
     document: documentObject,
   });
   assert.equal(result, "failed");
@@ -101,16 +102,16 @@ test("どちらのコピー手段も無い環境では例外化せずfailedを�
 });
 
 test("UIは二重クリックを同期的に防ぎ成功・失敗後も再操作できる", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /if \(!inviteUrl \|\| inviteCopyInFlight\.current\) return/);
   assert.match(client, /inviteCopyInFlight\.current = true/);
-  assert.match(client, /finally \{\s*inviteCopyInFlight\.current = false/s);
+  assert.match(client, /finally \{\s*inviteCopyInFlight\.current = false/);
   assert.match(client, /disabled=\{inviteCopyState === "copying"\}/);
   assert.match(client, /setTimeout\(\(\) => setInviteCopyState\("idle"\), 2_000\)/);
 });
 
 test("fallback失敗時は表示欄を選択しCtrl+C案内をaria-liveで通知する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /inviteUrlInputRef\.current\?\.focus\(\)/);
   assert.match(client, /inviteUrlInputRef\.current\?\.select\(\)/);
   assert.match(client, /コピーできませんでした。URLを選択したので Ctrl\+C を押してください。/);
@@ -121,7 +122,7 @@ test("fallback失敗時は表示欄を選択しCtrl+C案内をaria-liveで通知
 
 test("招待tokenは既存hash保存・期限・一回性を維持しconsoleやanalyticsへ渡さない", async () => {
   const [route, client, clipboard] = await Promise.all([
-    read("app/api/workspaces/[slug]/members/route.ts"), read("components/workspace-client.tsx"), read("lib/clipboard.ts"),
+    read("app/api/workspaces/[slug]/members/route.ts"), readWorkspaceSource(), read("lib/clipboard.ts"),
   ]);
   assert.match(route, /token_hash/);
   assert.match(route, /expires_at/);
@@ -133,13 +134,13 @@ test("招待tokenは既存hash保存・期限・一回性を維持しconsoleやa
 test("version32機能を保持しruntimeVersion 40をno-storeで公開する", async () => {
   const [version, runtime, markdown, client] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
-    read("components/markdown-view.tsx"), read("components/workspace-client.tsx"),
+    read("components/markdown-view.tsx"), readWorkspaceSource(),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
   assert.match(markdown, /remarkPlotlineBreaks/);
   assert.match(markdown, /remarkPlotlineCallouts/);
   assert.match(client, /別の方法で画像を追加/);
   assert.match(client, /restoreScene/);
-  assert.match(client, /実行版:40/);
+  assert.match(client, /WorkspaceGuide/);
 });

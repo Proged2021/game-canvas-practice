@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -61,7 +62,7 @@ test("場面取得と画像アップロード確定の両経路がローカル�
   const [route, upload, client] = await Promise.all([
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/route.ts"),
     read("lib/manual-image-upload.ts"),
-    read("components/workspace-client.tsx"),
+    readWorkspaceSource(),
   ]);
   assert.match(route, /rewriteLocalMarkdownImageSources\(typed\.local_markdown, slots\)/);
   assert.match(upload, /rewriteLocalMarkdownImageSources\(localEdit\.markdown, localSlots\)/);

@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -67,8 +68,8 @@ test("unsafe or unmatched images become harmless alternatives", () => {
 });
 
 test("sync UI always reports progress, success, warnings and detailed failures", async () => {
-  const client = await read("components/workspace-client.tsx");
-  assert.match(client, /if \(syncing \|\| !active\) return/);
+  const client = await readWorkspaceSource();
+  assert.match(client, /if \(syncing \|\| imageImportInFlight\.current \|\| !active\) return/);
   assert.match(client, /Confluenceを同期中です/);
   assert.match(client, /finally[\s\S]*setSyncing\(false\)/);
   assert.match(client, /本文と更新時刻を反映しました/);

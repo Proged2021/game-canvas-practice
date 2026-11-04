@@ -167,7 +167,7 @@ test("server-renders direct workspace links with saved scene content", async () 
   assert.match(html, /テスト1場面/);
   assert.match(html, /# 保存済みMarkdown/);
   assert.match(html, /href="\/"/);
-  assert.match(html, /Confluenceを追加/);
+  assert.match(html, /参考ページを追加/);
   assert.doesNotMatch(html, /接続設定/);
   assert.doesNotMatch(html, /ワークスペースを読み込んでいます/);
 });

@@ -2,11 +2,14 @@ import { db } from "@/lib/db";
 import { connectorAuthenticated, cleanupRelay } from "@/lib/lllm-relay";
 import { MAX_PARTS, validJobId, validPart, validCiphertext, relayJson, boundedRelayBody } from "@/lib/lllm-policy";
 import { LLLM_MEMBER_ACCOUNTS_SQL, LLLM_WORKSPACES_SQL, lllmActor } from "@/lib/lllm-workspaces";
+import { lllmChunkCapacityGuard } from "@/lib/lllm-capacity";
 
 const authorizedJob = `j.workspace_id IN (${LLLM_WORKSPACES_SQL})
   AND j.account_key IN (${LLLM_MEMBER_ACCOUNTS_SQL})
   AND EXISTS (SELECT 1 FROM workspace_extensions e WHERE e.workspace_id=j.workspace_id AND e.extension_id='lllm' AND e.enabled=1)
-  AND EXISTS (SELECT 1 FROM account_memberships m WHERE m.workspace_id=j.workspace_id AND m.account_key=j.account_key)`;
+  AND EXISTS (SELECT 1 FROM account_memberships m WHERE m.workspace_id=j.workspace_id AND m.account_key=j.account_key)
+  AND EXISTS (SELECT 1 FROM lllm_browser_job_sessions s JOIN lllm_browser_authorizations a ON a.token_hash=s.session_hash
+    WHERE s.job_id=j.id AND a.kind='session' AND a.workspace_id=j.workspace_id AND a.account_key=j.account_key AND a.expires_at>?2)`;
 const activeJob = `FROM lllm_bridge_jobs j WHERE j.id=?1 AND j.state='claimed' AND j.expires_at>?2 AND ${authorizedJob}`;
 
 export async function POST(request: Request) {
@@ -25,16 +28,12 @@ export async function POST(request: Request) {
     const activeIds = Array.isArray(b.active) ? b.active.filter(validJobId).slice(0, 16) : [];
     const active = [];
     for (const id of activeIds) {
-      const exists = await db().prepare(`SELECT j.id FROM lllm_bridge_jobs j JOIN workspace_extensions e ON e.workspace_id=j.workspace_id AND e.extension_id='lllm' AND e.enabled=1
-        JOIN account_memberships m ON m.workspace_id=j.workspace_id AND m.account_key=j.account_key WHERE j.id=? AND j.workspace_id IN (${LLLM_WORKSPACES_SQL})
-          AND j.account_key IN (${LLLM_MEMBER_ACCOUNTS_SQL}) AND j.state='claimed' AND j.expires_at>?`).bind(id, Date.now()).first();
+      const exists = await db().prepare(`SELECT j.id ${activeJob}`).bind(id, Date.now()).first();
       if (exists) active.push(id);
     }
     const ready = await db().prepare(`SELECT j.id,j.workspace_id,j.account_key,j.request_parts FROM lllm_bridge_jobs j
-      JOIN workspace_extensions e ON e.workspace_id=j.workspace_id AND e.extension_id='lllm' AND e.enabled=1
-      JOIN account_memberships m ON m.workspace_id=j.workspace_id AND m.account_key=j.account_key
-      WHERE j.workspace_id IN (${LLLM_WORKSPACES_SQL}) AND j.account_key IN (${LLLM_MEMBER_ACCOUNTS_SQL})
-        AND j.state='ready' AND j.expires_at>? ORDER BY j.created_at LIMIT 8`).bind(Date.now()).all<{ id: string; workspace_id: string; account_key: string; request_parts: number }>();
+      WHERE j.state='ready' AND j.expires_at>?2 AND ${authorizedJob} ORDER BY j.created_at LIMIT 8`)
+      .bind(null, Date.now()).all<{ id: string; workspace_id: string; account_key: string; request_parts: number }>();
     const jobs = [];
     for (const job of ready.results.slice(0, Math.max(0, 12 - activeIds.length))) {
       const claimed = await db().prepare(`UPDATE lllm_bridge_jobs AS j SET state='claimed'
@@ -57,9 +56,12 @@ export async function POST(request: Request) {
   if (b.action === "write" && validPart(b.part) && validCiphertext(b.ciphertext)) {
     const written = await db().prepare(`INSERT INTO lllm_bridge_chunks(job_id,direction,part,ciphertext)
       SELECT j.id,'response',?3,?4 ${activeJob}
+        AND ${lllmChunkCapacityGuard("j.account_key", "?1", "response", "?3")}
       ON CONFLICT(job_id,direction,part) DO UPDATE SET ciphertext=lllm_bridge_chunks.ciphertext`)
       .bind(b.id, Date.now(), b.part, b.ciphertext).run();
-    return written.meta.changes ? relayJson({ ok: true }) : relayJson({ error: "Expired or revoked" }, 404);
+    if (written.meta.changes) return relayJson({ ok: true });
+    const current = await db().prepare(`SELECT j.id ${activeJob}`).bind(b.id, Date.now()).first();
+    return current ? relayJson({ error: "Encrypted relay storage is full" }, 429) : relayJson({ error: "Expired or revoked" }, 404);
   }
   if (b.action === "complete" && Number.isInteger(b.parts) && b.parts > 0 && b.parts <= MAX_PARTS) {
     const updated = await db().prepare(`UPDATE lllm_bridge_jobs AS j SET state='done',response_parts=?3,expires_at=?4

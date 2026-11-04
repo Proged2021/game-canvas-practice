@@ -3,6 +3,7 @@ import { requireChatGPTUser } from "@/app/chatgpt-auth";
 import { principalForUser } from "@/lib/account-principal";
 import { getMembership } from "@/lib/db";
 import { WorkspaceExtensions } from "@/components/workspace-extensions";
+import { ArrowLeft } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +13,11 @@ export default async function ExtensionsPage({ params }: { params: Promise<{ slu
   const user = await principalForUser(identity);
   const membership = await getMembership(slug, user.accountKey);
   if (!membership) notFound();
-  return <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
-    <a href={`/w/${encodeURIComponent(slug)}`} className="text-sm underline">← ワークスペースへ戻る</a>
-    <header><p className="text-sm text-muted-foreground">{membership.name}</p><h1 className="text-3xl font-semibold">拡張機能</h1></header>
-    <p>このワークスペースのメンバーが使うアプリを選べます。追加・停止はオーナーが行います。</p>
-    <div><WorkspaceExtensions slug={slug} initiallyOpen /></div>
+  return <main className="extensions-page">
+    <div className="extensions-page-topbar"><a href={`/w/${encodeURIComponent(slug)}`}><ArrowLeft size={16} /><span>{membership.name}に戻る</span></a></div>
+    <div className="extensions-page-content">
+      <header><p>ワークスペースを、もっと便利に。</p><h1>拡張機能</h1><p>使いたい機能を選んで追加すると、このワークスペースから利用できます。</p></header>
+      <WorkspaceExtensions slug={slug} presentation="page" />
+    </div>
   </main>;
 }

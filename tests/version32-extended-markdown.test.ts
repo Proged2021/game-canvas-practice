@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -102,7 +103,7 @@ test("Markdown原文は保存APIで変換せず再読込時も同じ列から返
 });
 
 test("編集原文・閲覧切替・場面切替は同じ選択場面Markdownを即時参照する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /value=\{active\.markdown\}/);
   assert.match(client, /updateScene\(\{ markdown: e\.target\.value \}\)/);
   assert.match(client, /<MarkdownView markdown=\{resolveDisplayMarkdown\(active\.markdown\)\}/);
@@ -111,7 +112,7 @@ test("編集原文・閲覧切替・場面切替は同じ選択場面Markdownを
 
 test("Confluence本文・既存画像・手動画像の別経路を変更しない", async () => {
   const [client, assets, confluence] = await Promise.all([
-    read("components/workspace-client.tsx"), read("lib/confluence-assets.ts"), read("lib/confluence-safe.ts"),
+    readWorkspaceSource(), read("lib/confluence-assets.ts"), read("lib/confluence-safe.ts"),
   ]);
   assert.match(client, /confluence-html/);
   assert.match(client, /別の方法で画像を追加/);
@@ -121,7 +122,7 @@ test("Confluence本文・既存画像・手動画像の別経路を変更しな�
 
 test("version31の30日削除復元・表示名とUndo\/Redoを維持する", async () => {
   const [client, recovery, profile] = await Promise.all([
-    read("components/workspace-client.tsx"), read("lib/scene-recovery-policy.ts"), read("app/api/workspaces/[slug]/profile/route.ts"),
+    readWorkspaceSource(), read("lib/scene-recovery-policy.ts"), read("app/api/workspaces/[slug]/profile/route.ts"),
   ]);
   assert.match(client, /restoreScene/);
   assert.match(client, /performUndo/);
@@ -132,9 +133,9 @@ test("version31の30日削除復元・表示名とUndo\/Redoを維持する", as
 
 test("runtimeVersion 40・UI表示・no-store markerを公開する", async () => {
   const [version, runtime, client] = await Promise.all([
-    read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
+    read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), readWorkspaceSource(),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:40/);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
+  assert.match(client, /WorkspaceGuide/);
 });

@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -167,10 +168,10 @@ test("MIME magic bytesと10MiB上限を維持する", async () => {
 test("runtimeVersion 40・UI表示・no-storeを公開する", async () => {
   const [version, runtime, sync, ui] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
-    read("app/api/workspaces/[slug]/confluence/sync/route.ts"), read("components/workspace-client.tsx"),
+    read("app/api/workspaces/[slug]/confluence/sync/route.ts"), readWorkspaceSource(),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
   assert.match(sync, /runtimeVersion: PLOTLINE_RUNTIME_VERSION/);
   assert.match(sync, /cache-control", "no-store/);
   assert.match(ui, /実行版: \$\{d\.runtimeVersion\}/);

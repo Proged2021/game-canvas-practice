@@ -2,7 +2,6 @@ import { db } from "./db.ts";
 import { loadManualSceneAssets, discardSceneAssetGeneration } from "./confluence-assets.ts";
 import {
   buildAvailableImageSlots,
-  extractConfluenceImageSlots,
   MAX_MANUAL_IMAGES_PER_SCENE,
   MAX_MANUAL_SCENE_BYTES,
   rewriteConfluenceSlotSources,
@@ -10,6 +9,7 @@ import {
 } from "./confluence-manual-images.ts";
 import { MAX_CONFLUENCE_IMAGE_BYTES, SAFE_IMAGE_MEDIA_TYPES } from "./confluence-safe.ts";
 import { rewriteLocalHtmlImageSources, rewriteLocalMarkdownImageSources } from "./local-image-links.ts";
+import { loadStoredSceneImageSlots } from "./confluence-stored-image-slots.ts";
 
 // Kept below the Sites request-body ceiling (production rejected ~1.2MiB before the Worker).
 export const MANUAL_IMAGE_UPLOAD_CHUNK_BYTES = 160 * 1024;
@@ -62,7 +62,7 @@ function validHex(value: unknown, length: number): value is string {
 }
 
 export async function sha256Hex(bytes: ArrayBuffer | Uint8Array) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const view = bytes instanceof Uint8Array ? Uint8Array.from(bytes) : new Uint8Array(bytes);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", view));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -312,23 +312,15 @@ export async function completeManualImageUpload(session: ManualUploadSession) {
 
 export async function buildManualUploadResult(workspaceId: string, sceneId: string, pageId: string, syncedHtml: string, saved: number) {
   const source = await sourceForScene(workspaceId, sceneId);
-  const slots = source && source.page_id === pageId
-    ? await slotsForSource({ ...source, synced_html: syncedHtml })
-    : extractConfluenceImageSlots(syncedHtml);
   const current = await loadManualSceneAssets(workspaceId, sceneId, pageId);
-  const savedMap = new Map(current.map((item) => [item.slot_key, item.asset_key]));
-  const proxyPrefix = `/api/workspaces/${encodeURIComponent(workspaceId)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
-  const slotResults = slots.map((slot) => ({
-    slotKey: slot.slotKey,
-    label: slot.label,
-    status: savedMap.has(slot.slotKey) ? "saved" : "missing",
-    src: savedMap.has(slot.slotKey) ? `${proxyPrefix}/${savedMap.get(slot.slotKey)}` : null,
-  }));
+  const slotResults = await loadStoredSceneImageSlots({ database: db(), workspaceId, sceneId, pageId,
+    syncedHtml, localMarkdown: source?.page_id === pageId ? source.local_markdown : null,
+    sceneMarkdown: source?.page_id === pageId ? source.scene_markdown : null });
   const localEdit = await db().prepare(`SELECT html,markdown FROM scene_confluence_local_edits
     WHERE workspace_id=?1 AND scene_id=?2 AND page_id=?3`)
     .bind(workspaceId, sceneId, pageId)
     .first<{ html: string | null; markdown: string | null }>();
-  const localSlots = slotResults.map((slot) => ({ slotKey: slot.slotKey, label: slot.label, src: slot.src }));
+  const localSlots = slotResults;
   const localMarkdown = localEdit?.markdown == null
     ? null
     : rewriteLocalMarkdownImageSources(localEdit.markdown, localSlots);

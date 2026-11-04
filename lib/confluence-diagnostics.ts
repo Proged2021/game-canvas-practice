@@ -171,9 +171,9 @@ export function aggregateResolverDiagnostics(
             ? "thumbnail_download"
             : "image_cdn";
     const status = failing?.status ?? 0;
-    if (status === 401 && (failing?.sentAuthorization === false || failing?.hostCategory !== "oauth_gateway" || requestStage === "image_cdn"))
+    if (failing && status === 401 && (failing.sentAuthorization === false || failing.hostCategory !== "oauth_gateway" || requestStage === "image_cdn"))
       return makeDiagnostic("IMG-CDN-401", "image_cdn", status, failing.hostCategory, "cdn_fetch_failed", logicalImageCount);
-    if (status === 403 && failing?.sentAuthorization === false)
+    if (failing && status === 403 && failing.sentAuthorization === false)
       return makeDiagnostic("IMG-CDN-403", "image_cdn", status, failing.hostCategory, "cdn_fetch_failed", logicalImageCount);
     const byStatus = status ? classifyAtlassianStatus(requestStage, status, failing?.hostCategory ?? "unknown", logicalImageCount) : null;
     if (byStatus) return byStatus;

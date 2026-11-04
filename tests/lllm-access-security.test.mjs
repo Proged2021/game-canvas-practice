@@ -3,7 +3,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { build } from 'esbuild';
 
 const SOURCE='0279e5f9-6122-4fb9-90ff-b9073a9fc7c1';
@@ -22,6 +22,7 @@ const bundled=await build({
     export * as connector from './app/api/lllm-connector/route.ts';
     export * as extensions from './app/api/workspaces/[slug]/extensions/route.ts';
     export * as assets from './app/lllm-assets/[asset]/route.ts';
+    export * as launch from './app/api/workspaces/[slug]/extensions/lllm/launch/route.ts';
   `,resolveDir:root},bundle:true,format:'esm',platform:'node',write:false,
   plugins:[{name:'lllm-security-account-and-runtime-boundaries',setup(builder){
     builder.onResolve({filter:/^(cloudflare:workers|@\/app\/chatgpt-auth|@\/lib\/(account-principal|db|lllm-page|lllm-assets))$/},args=>({path:args.path,namespace:'lllm-access-security'}));
@@ -41,6 +42,9 @@ const bundled=await build({
 });
 const routes=await import('data:text/javascript;base64,'+Buffer.from(bundled.outputFiles[0].text).toString('base64'));
 const migration=await readFile(new URL('../drizzle/0014_workspace_lllm.sql',import.meta.url),'utf8');
+const customMigration=await readFile(new URL('../drizzle/0015_workspace_custom_extensions.sql',import.meta.url),'utf8');
+const browserMigration=await readFile(new URL('../drizzle/0016_lllm_browser_authorizations.sql',import.meta.url),'utf8');
+const providerMigration=await readFile(new URL('../drizzle/0017_workspace_extension_providers.sql',import.meta.url),'utf8');
 
 function fixture(t){
   const sqlite=new DatabaseSync(':memory:');
@@ -60,8 +64,12 @@ function fixture(t){
     [NAMESAKE,'mallory','owner'],
   ])member.run(...row);
   sqlite.exec(migration);
+  sqlite.exec(customMigration);
+  sqlite.exec(browserMigration);
   sqlite.prepare("INSERT INTO workspace_extensions(workspace_id,extension_id,enabled) VALUES(?,'lllm',1)").run(DEMO);
   sqlite.prepare("INSERT INTO workspace_extensions(workspace_id,extension_id,enabled) VALUES(?,'lllm',1)").run(NAMESAKE);
+  sqlite.exec(providerMigration);
+  for(const workspaceId of [SOURCE,DEMO])sqlite.prepare("INSERT INTO workspace_extension_providers(workspace_id,extension_id,source_workspace_id) VALUES(?,'lllm',?)").run(workspaceId,SOURCE);
   sqlite.prepare("INSERT INTO lllm_bridge_state(id,last_seen) VALUES('server',?)").run(Date.now());
   let beforeQuery;
   const applyHook=(sql,method)=>{
@@ -77,20 +85,36 @@ function fixture(t){
     };},
     async batch(statements){sqlite.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}},
   };
-  state.database=database;state.sqlite=sqlite;state.user='alice';
+  state.database=database;state.sqlite=sqlite;state.user='alice';state.sessions=new Map();
   state.env.LLLM_PUBLIC_KEY='synthetic-public-key';
   return {sqlite,beforeQuery(match,callback){beforeQuery={match,callback};}};
 }
 const context=(slug='minamomura')=>({params:Promise.resolve({slug})});
 const noStore=response=>assert.match(response.headers.get('cache-control')??'',/no-store/);
+function sessionFor(workspaceId,account=state.user){
+  if(!account)return '';
+  const key=JSON.stringify([workspaceId,account]);
+  if(state.sessions.has(key))return state.sessions.get(key);
+  const token=randomBytes(32).toString('hex');
+  state.sqlite.prepare("INSERT INTO lllm_browser_authorizations VALUES (?,'session',?,?,?,?)")
+    .run(createHash('sha256').update(token).digest('hex'),workspaceId,account,Date.now(),Date.now()+60_000);
+  state.sessions.set(key,token);return token;
+}
 function relayRequest(slug='minamomura',body,query=''){
+  const workspace=state.sqlite.prepare('SELECT id FROM workspaces WHERE slug=?').get(slug);
   return new Request(`${ORIGIN}/api/workspaces/${slug}/extensions/lllm${query}`,{method:body?'POST':'GET',headers:{
     origin:ORIGIN,'sec-fetch-site':'same-origin','content-type':'application/json','x-plotline-csrf':'lllm-relay',
+    'x-lllm-session':workspace?sessionFor(workspace.id):'',
   },body:body?JSON.stringify(body):undefined});
 }
 const get=(slug='minamomura',query='')=>routes.relay.GET(relayRequest(slug,undefined,query),context(slug));
 const post=(slug,body)=>routes.relay.POST(relayRequest(slug,body),context(slug));
-const page=(slug='minamomura',query='')=>routes.page.GET(new Request(`${ORIGIN}/apps/lllm/${slug}${query}`),context(slug));
+const page=async(slug='minamomura',query='')=>{
+  if(query)return routes.page.GET(new Request(`${ORIGIN}/apps/lllm/${slug}${query}`),context(slug));
+  const issued=await routes.launch.POST(new Request(`${ORIGIN}/api/workspaces/${slug}/extensions/lllm/launch`,{method:'POST',headers:{origin:ORIGIN,'content-type':'application/json','x-plotline-csrf':'lllm-launch'},body:'{}'}),context(slug));
+  const body=issued.status===201?await issued.json():null;
+  return routes.page.GET(new Request(`${ORIGIN}${body?.url||'/apps/lllm/'+slug}`),context(slug));
+};
 const connector=body=>routes.connector.POST(new Request(`${ORIGIN}/api/lllm-connector`,{method:'POST',headers:{
   authorization:`Bearer ${state.env.LLLM_CONNECTOR_TOKEN}`,'content-type':'application/json',
 },body:JSON.stringify(body)}));
@@ -100,6 +124,8 @@ function insertJob(sqlite,{workspaceId=DEMO,account='bob',status='ready',expires
     .run(id,workspaceId,account,1,Date.now(),expiresAt,status,status==='done'?1:0);
   sqlite.prepare("INSERT INTO lllm_bridge_chunks(job_id,direction,part,ciphertext) VALUES(?,?,0,'YQ==')")
     .run(id,status==='done'?'response':'request');
+  sqlite.prepare('INSERT INTO lllm_browser_job_sessions VALUES (?,?)')
+    .run(id,createHash('sha256').update(sessionFor(workspaceId,account)).digest('hex'));
   return id;
 }
 
@@ -122,7 +148,7 @@ test('anonymous direct links never render the LLLM startup page or expose relay 
 test('demo-only membership cannot open HTML, obtain the public key or create a job',async t=>{
   const f=fixture(t);state.user='demo-only';
   const html=await page('demo');
-  assert.equal(html.status,403);
+  assert.equal(html.status,404);
   assert.doesNotMatch(await html.text(),/secured-lllm-startup/);
   assert.equal((await get('demo')).status,403);
   assert.equal((await post('demo',{action:'create',id:randomUUID(),parts:1})).status,403);
@@ -132,7 +158,7 @@ test('demo-only membership cannot open HTML, obtain the public key or create a j
 test('query strings and request-body workspace substitutions cannot bypass original membership',async t=>{
   fixture(t);state.user='demo-only';
   for(const query of ['?workspace=minamomura',`?workspaceId=${SOURCE}&slug=minamomura`,'?workspace=demo#chat']){
-    assert.equal((await page('demo',query)).status,403);
+    assert.equal((await page('demo',query)).status,404);
     assert.equal((await get('demo',query)).status,403);
   }
   assert.equal((await post('demo',{action:'create',id:randomUUID(),parts:1,workspace_id:SOURCE,slug:'minamomura',account_key:'alice'})).status,403);
@@ -162,12 +188,12 @@ test('original membership alone does not grant membership of the launch workspac
 
 test('an identically named workspace and its owner receive no access through the name or shared link',async t=>{
   const f=fixture(t);state.user='mallory';
-  assert.equal((await page('namesake')).status,403);
+  assert.equal((await page('namesake')).status,404);
   assert.equal((await get('namesake')).status,403);
   assert.equal((await page('minamomura')).status,404);
   f.sqlite.prepare('INSERT INTO account_memberships VALUES(?,?,?)').run(NAMESAKE,'bob','viewer');
   state.user='bob';
-  assert.equal((await page('namesake')).status,403,'both memberships do not make an unrelated owner eligible');
+  assert.equal((await page('namesake')).status,404,'both memberships do not make an unrelated owner eligible');
 });
 
 test('extension discovery hides availability and owners cannot enable it without original membership',async t=>{
@@ -207,7 +233,7 @@ test('removing original membership revokes app, API, queued/active jobs and comp
   const done=insertJob(f.sqlite,{status:'done'});
   assert.equal((await get('demo',`?id=${done}&part=0`)).status,200);
   f.sqlite.prepare('DELETE FROM account_memberships WHERE workspace_id=? AND account_key=?').run(SOURCE,'bob');
-  assert.equal((await page('demo')).status,403);
+  assert.equal((await page('demo')).status,404);
   assert.equal((await get('demo',`?id=${done}&part=0`)).status,403);
   assert.equal((await post('demo',{action:'chunk',id:pending,part:0,ciphertext:'YQ=='})).status,403);
   const polled=await (await connector({action:'poll',active:[active]})).json();
@@ -315,8 +341,8 @@ test('application HTML, API responses and code assets prohibit storage in HTTP c
 test('disabling the target extension or removing its public key blocks newly opened pages and APIs',async t=>{
   const f=fixture(t);state.user='bob';
   f.sqlite.prepare("UPDATE workspace_extensions SET enabled=0 WHERE workspace_id=? AND extension_id='lllm'").run(DEMO);
-  assert.equal((await page('demo')).status,403);assert.equal((await get('demo')).status,403);
+  assert.equal((await page('demo')).status,404);assert.equal((await get('demo')).status,403);
   f.sqlite.prepare("UPDATE workspace_extensions SET enabled=1 WHERE workspace_id=? AND extension_id='lllm'").run(DEMO);
   delete state.env.LLLM_PUBLIC_KEY;
-  assert.equal((await page('demo')).status,403);assert.equal((await get('demo')).status,403);
+  assert.equal((await page('demo')).status,404);assert.equal((await get('demo')).status,403);
 });

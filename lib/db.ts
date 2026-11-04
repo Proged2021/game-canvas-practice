@@ -14,6 +14,57 @@ export type WorkspaceSummary = {
   scene_count: number;
 };
 
+type WorkspaceSceneRow = {
+  id: string;
+  title: string;
+  confluence_page_url: string | null;
+  markdown: string;
+  position: number;
+  revision: number;
+  updated_by: string;
+  updated_at: string;
+};
+
+type RecoverableSceneRow = {
+  id: string;
+  title: string;
+  position: number;
+  // The WHERE predicates exclude NULLs and expired recovery entries.
+  deleted_at: string;
+  delete_expires_at: string;
+};
+
+type ActiveInvitationRow = {
+  id: string;
+  role: "editor" | "viewer";
+  status: "active";
+  expires_at: string;
+  created_at: string;
+};
+
+type WorkspaceMemberRow = {
+  role: Role;
+  display_name: string | null;
+  is_current: 0 | 1;
+  created_at: string;
+};
+
+type PendingJoinRequestRow = {
+  id: string;
+  confirmation_code: string;
+  status: "pending";
+  created_at: string;
+  expires_at: string;
+  role: "editor" | "viewer";
+};
+
+type WorkspaceConnectionRow = {
+  cloud_url: string | null;
+  attachment_scope_granted: number;
+  last_error: string | null;
+  connected: 0 | 1;
+};
+
 export async function listWorkspaces(accountKey: string) {
   const result = await db()
     .prepare(
@@ -67,17 +118,17 @@ export async function loadWorkspaceData(
          WHERE s.workspace_id=?1 AND s.deleted_at IS NULL ORDER BY s.position,s.created_at,s.id`,
       )
       .bind(membership.workspace_id)
-      .all(),
+      .all<WorkspaceSceneRow>(),
     db()
       .prepare(`SELECT id,title,position,deleted_at,delete_expires_at FROM scenes
         WHERE workspace_id=?1 AND deleted_at IS NOT NULL AND delete_expires_at>CURRENT_TIMESTAMP
         ORDER BY deleted_at DESC,id`)
       .bind(membership.workspace_id)
-      .all(),
+      .all<RecoverableSceneRow>(),
     db()
       .prepare("SELECT id, role, status, expires_at, created_at FROM secure_workspace_invites WHERE workspace_id=?1 AND status='active' AND expires_at>CURRENT_TIMESTAMP ORDER BY created_at DESC")
       .bind(membership.workspace_id)
-      .all(),
+      .all<ActiveInvitationRow>(),
     db()
       .prepare(
         `SELECT role,display_name,CASE WHEN account_key=?2 THEN 1 ELSE 0 END AS is_current,created_at
@@ -85,7 +136,7 @@ export async function loadWorkspaceData(
          ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END,created_at`,
       )
       .bind(membership.workspace_id, membership.account_key)
-      .all(),
+      .all<WorkspaceMemberRow>(),
     db().prepare("SELECT display_name FROM account_memberships WHERE workspace_id=?1 AND account_key=?2")
       .bind(membership.workspace_id, membership.account_key).first<{ display_name: string | null }>(),
     db()
@@ -95,7 +146,7 @@ export async function loadWorkspaceData(
          WHERE r.workspace_id=?1 AND r.status='pending' AND r.expires_at>CURRENT_TIMESTAMP AND i.status='active' AND i.expires_at>CURRENT_TIMESTAMP ORDER BY r.created_at DESC`,
       )
       .bind(membership.workspace_id)
-      .all(),
+      .all<PendingJoinRequestRow>(),
     db()
       .prepare(
         `SELECT cloud_url, attachment_scope_granted, last_error,
@@ -103,7 +154,7 @@ export async function loadWorkspaceData(
       FROM confluence_connections WHERE workspace_id = ?1`,
       )
       .bind(membership.workspace_id)
-      .first(),
+      .first<WorkspaceConnectionRow>(),
   ]);
   return {
     workspace: {

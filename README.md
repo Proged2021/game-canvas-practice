@@ -1,4 +1,9 @@
-# vinext-starter
+# game-canvas.app
+
+機能ごとの編集場所は [機能別ファイル案内](docs/FEATURES.md) にまとめています。
+サイト内のお知らせの本文・日付は `lib/dashboard/announcement.ts` を編集します。
+
+## 開発用スターターの説明
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and

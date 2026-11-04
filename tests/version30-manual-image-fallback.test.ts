@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -126,7 +127,7 @@ test("CDN401は再接続不要で、本文同期はmanual fallback付き成功�
   assert.equal(diagnostic.code, "IMG-CDN-401");
   assert.equal(diagnosticNeedsReconnect(diagnostic), false);
   const [sync, client] = await Promise.all([
-    read("app/api/workspaces/[slug]/confluence/sync/route.ts"), read("components/workspace-client.tsx"),
+    read("app/api/workspaces/[slug]/confluence/sync/route.ts"), readWorkspaceSource(),
   ]);
   assert.match(sync, /manualFallbackAvailable: true/);
   assert.match(sync, /本文は更新しました。画像は下の「別の方法で画像を追加」/);
@@ -138,12 +139,12 @@ test("CDN401は再接続不要で、本文同期はmanual fallback付き成功�
 
 test("runtimeVersion 40でもversion30画像機能とno-storeを維持する", async () => {
   const [version, runtime, client, upload, response] = await Promise.all([
-    read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
+    read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"), readWorkspaceSource(),
     read("app/api/workspaces/[slug]/confluence/scenes/[sceneId]/images/route.ts"), read("lib/confluence-asset-bytes.ts"),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(upload, /cache-control.*no-store/s);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
+  assert.match(upload, /cache-control[\s\S]*no-store/);
   assert.match(response, /private, no-store/);
   assert.match(client, /lastRuntime = "40"/);
 });

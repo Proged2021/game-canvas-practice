@@ -4,6 +4,9 @@ const ui={server:null,busy:null,file:null,preview:null,history:[],lastReply:'',a
 let statusTimer=null;
 const clientId='studio-'+Array.from(crypto.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');
 const nap=ms=>new Promise(r=>setTimeout(r,ms));
+// Match the controller's bounded admission/start budgets, including cold WSL startup.
+// Stop requests retain the shorter existing limit.
+function modelOperationBudgetMs(model,action='start'){return action==='stop'?450000:(model==='noctq'?2760000:1860000);}
 function note(mode,text,error=false){if(ui.revoked)return;const e=$(mode+'Status');e.textContent=text;e.className='notice'+(error?' error':'');}
 function message(role,text){if(ui.revoked)return null;const area=$('messages');if(!area.querySelector('.bubble'))area.replaceChildren();const wrap=document.createElement('article');wrap.className='bubble '+role;const label=document.createElement('span');label.className='speaker';label.textContent=role==='user'?'YOU':'AI';const body=document.createElement('div');body.className='content';body.textContent=text;wrap.append(label,body);area.append(wrap);area.scrollTop=area.scrollHeight;return body;}
 function selectTab(tab){if(!['chat','generate','edit'].includes(tab))tab='chat';document.querySelectorAll('[data-tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===tab)));for(const key of ['chat','generate','edit'])$(key+'Panel').hidden=key!==tab;document.querySelector('.vaultpanel').hidden=ui.revoked||tab==='chat';if(location.hash!=='#'+tab)history.replaceState(null,'','#'+tab);}
@@ -28,7 +31,7 @@ function revokeAccess(detail={}){
  clearSensitiveContents();ui.server=null;ui.busy=null;$('models').replaceChildren();$('memory').textContent='';$('modelNotice').textContent='';
  void GpuQueue.release().catch(()=>{});GpuQueue.update(null);$('queuePanel').hidden=true;document.querySelector('.vaultpanel').hidden=true;
  $('machineStatus').textContent=ui.accessStatus===401?'ログインを確認してください':'LLLMの利用を停止しました';$('machineStatus').parentElement.classList.add('offline');
- connectionNotice('LLLMを利用できません',(detail.message||'利用権限を確認できませんでした。')+' ログインと、水無墓村・このワークスペースへの参加状態を確認してください。再開する場合は画面を開き直してください。',true);
+ connectionNotice('LLLMを利用できません',(detail.message||'利用権限を確認できませんでした。')+' ログインと、水無墓村・このワークスペースへの参加状態を確認し、ワークスペースの拡張機能から開き直してください。',true);
  $('retryConnection').disabled=false;controls();
 }
 window.addEventListener('lllmaccessrevoked',event=>revokeAccess(event.detail));
@@ -39,7 +42,7 @@ function controls(){
  $('sendChat').disabled=!!ui.busy||!s||other||!$('chatInput').value.trim();
  $('runGenerate').disabled=!!ui.busy||!s||other||!PrivateImages.ready()||!$('generatePrompt').value.trim();
  $('runEdit').disabled=!!ui.busy||!s||other||!PrivateImages.ready()||(!!ui.file&&!PrivateImages.canUnlock())||!$('editPrompt').value.trim();
- const waiting=GpuQueue.isWaiting(),sharedBusy=!!(s?.scheduler?.active||s?.scheduler?.waiting),turn=GpuQueue.view();for(const mode of ['chat','generate','edit']){const hint=$(mode+'QueueHint'),mine=ui.busy===mode;hint.textContent=mine&&waiting?'順番待ち：'+turn.position+'番目 · 前に'+turn.ahead+'件。自動で始まります。':mine&&turn?.state==='granted'?'あなたの番です。準備・処理中です。':mine?'順番の受付中です…':sharedBusy?'ほかの依頼を処理中です。送信して順番待ちに入れます。':'受付できます。混雑時は自動で順番待ちになります。';hint.className='task-queue-hint'+(mine&&waiting?' waiting':mine?' active':'');}$('editResultTitle').textContent=ui.file?'編集した画像':'仕上がった画像';$('sendChat').textContent=ui.busy==='chat'?(waiting?'順番待ち中…':'返答を作成中…'):(sharedBusy?'順番待ちで送信する':'送信する');
+ const waiting=GpuQueue.isWaiting(),sharedBusy=!!(s?.scheduler?.active||s?.scheduler?.waiting),turn=GpuQueue.view();for(const mode of ['chat','generate','edit']){const hint=$(mode+'QueueHint'),mine=ui.busy===mode;hint.textContent=!s?'AIサーバーに接続すると送信できます。':mine&&waiting?'順番待ち：'+turn.position+'番目 · 前に'+turn.ahead+'件。自動で始まります。':mine&&turn?.state==='granted'?'あなたの番です。準備・処理中です。':mine?'順番の受付中です…':sharedBusy?'ほかの依頼を処理中です。送信して順番待ちに入れます。':'受付できます。混雑時は自動で順番待ちになります。';hint.className='task-queue-hint'+(mine&&waiting?' waiting':mine?' active':'');}$('editResultTitle').textContent=ui.file?'編集した画像':'仕上がった画像';$('sendChat').textContent=ui.busy==='chat'?(waiting?'順番待ち中…':'返答を作成中…'):(sharedBusy?'順番待ちで送信する':'送信する');
  $('runGenerate').textContent=ui.busy==='generate'?(waiting?'順番待ち中…':'生成中…'):(sharedBusy?'順番待ちで生成する':'画像を生成する');$('runEdit').textContent=ui.busy==='edit'?(waiting?'順番待ち中…':ui.file?'編集中…':'生成中…'):(ui.file?(sharedBusy?'順番待ちで編集する':'この画像を編集する'):(sharedBusy?'順番待ちで生成する':'説明から画像を生成する'));
  $('clearEditImage').hidden=!ui.file;$('clearEditImage').disabled=!!ui.busy;
  document.querySelectorAll('.workspace textarea,.workspace input,.workspace select,[data-reset],#newChat').forEach(e=>e.disabled=ui.revoked||!!ui.busy);
@@ -62,7 +65,7 @@ function renderStatus(s){
 async function api(url,options={}){if(ui.revoked)throw accessError();const headers={...(options.headers||{})};if(options.method==='POST')headers['X-Control-Token']=ui.server?.actionToken||'';const ticket=GpuQueue.ticket();if(ticket)headers['X-AI-Ticket']=ticket;const r=await fetch(url,{cache:'no-store',...options,headers});if(ui.revoked)throw accessError();let data;try{data=await r.json();}catch{throw Error('PCからの応答を読み取れません。少し待ってもう一度お試しください。');}if(ui.revoked)throw accessError();if(!r.ok){const reason=data.error,error=Error(typeof reason==='string'?reason:reason?.message||'処理に失敗しました。設定を初期値に戻してお試しください。');error.status=r.status;error.code=data.code||'LLLM_HTTP_'+r.status;throw error;}return data;}
 async function freshStatus(){const s=await api('/api/status');renderStatus(s);return s;}
 async function ensureModel(id,mode){
- const deadline=Date.now()+420000;let requestId=null;
+ const deadline=Date.now()+modelOperationBudgetMs(id);let requestId=null;
  while(Date.now()<deadline){const s=await freshStatus();if(!s.job&&(id==='noctq'?s.imageRunning:s.current===id))return;
   if(requestId&&s.lastJob?.id===requestId&&!s.lastJob.ok)throw Error(s.lastJob.message);
   if(s.job){note(mode,s.job.label+'… このままお待ちください。');await nap(1400);continue;}
@@ -75,9 +78,9 @@ async function refresh(){if(ui.revoked||ui.polling)return;ui.polling=true;$('ret
 $('retryConnection').addEventListener('click',()=>{if(!ui.revoked){void refresh();return;}let target='/';try{const slug=document.querySelector('meta[name="lllm-workspace"]')?.content;if(slug)target='/w/'+encodeURIComponent(decodeURIComponent(slug));}catch{}location.assign(target);});
 for(const id of ['chatInput','generatePrompt','editPrompt'])$(id).addEventListener('input',controls);
 $('chatModel').addEventListener('change',()=>{$('temperature').value=$('chatModel').value==='gemma'?1:.7;});
-$('models').addEventListener('click',async event=>{const b=event.target.closest('button[data-model]');if(!b||ui.busy||ui.revoked)return;ui.busy='model';controls();let succeeded=false;try{await GpuQueue.acquire(b.dataset.model);await freshStatus();const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:b.dataset.action,model:b.dataset.model})});$('modelNotice').textContent=r.message;if(r.code===202){const deadline=Date.now()+450000;while(Date.now()<deadline){await nap(1400);const s=await freshStatus();if(!s.job){if(s.lastJob?.id===r.job.id&&!s.lastJob.ok)throw Error(s.lastJob.message);break;}}if(ui.server?.job)throw Error('モデルの状態を確認中です。');}succeeded=true;}catch(e){if(!ui.revoked)$('modelNotice').textContent=e.message;}finally{await GpuQueue.release(succeeded);ui.busy=null;controls();await refresh();}});
+$('models').addEventListener('click',async event=>{const b=event.target.closest('button[data-model]');if(!b||ui.busy||ui.revoked)return;ui.busy='model';controls();let succeeded=false;try{await GpuQueue.acquire(b.dataset.model);await freshStatus();const r=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:b.dataset.action,model:b.dataset.model})});$('modelNotice').textContent=r.message;if(r.code===202){const deadline=Date.now()+modelOperationBudgetMs(b.dataset.model,b.dataset.action);while(Date.now()<deadline){await nap(1400);const s=await freshStatus();if(!s.job){if(s.lastJob?.id===r.job.id&&!s.lastJob.ok)throw Error(s.lastJob.message);break;}}if(ui.server?.job)throw Error('モデルの状態を確認中です。');}succeeded=true;}catch(e){if(!ui.revoked)$('modelNotice').textContent=e.message;}finally{await GpuQueue.release(succeeded);ui.busy=null;controls();await refresh();}});
 $('newChat').addEventListener('click',()=>{if(ui.busy||ui.revoked)return;ui.history=[];ui.lastReply='';$('chatInput').value='';$('messages').replaceChildren();const blank=document.createElement('div');blank.className='empty';blank.textContent='新しい会話を始めましょう。';$('messages').append(blank);note('chat','メッセージを入力してください。');controls();});
-$('copyChat').addEventListener('click',async()=>{try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(ui.lastReply);else{const t=document.createElement('textarea');t.value=ui.lastReply;t.className='clipboard';document.body.append(t);t.select();if(!document.execCommand('copy'))throw Error();t.remove();}note('chat','返答をコピーしました。');}catch{note('chat','返答の文字を選択してコピーしてください。');}});
+$('copyChat').addEventListener('click',async()=>{if(ui.revoked||!ui.lastReply)return;try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(ui.lastReply);else{const t=document.createElement('textarea');try{t.value=ui.lastReply;t.className='clipboard';document.body.append(t);t.select();if(!document.execCommand('copy'))throw Error();}finally{t.value='';t.remove();}}if(!ui.revoked)note('chat','返答をコピーしました。');}catch{if(!ui.revoked)note('chat','返答の文字を選択してコピーしてください。');}});
 $('stopChat').addEventListener('click',()=>ui.abort?.abort());
 $('chatInput').addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key==='Enter'&&!$('sendChat').disabled){event.preventDefault();$('sendChat').click();}});
 $('sendChat').addEventListener('click',async()=>{
@@ -123,7 +126,7 @@ window.addEventListener('privacyready',controls);window.addEventListener('queuec
 $('openAdrenalin').addEventListener('click',async()=>{const b=$('openAdrenalin');b.disabled=true;try{await freshStatus();const r=await api('/api/tools/adrenalin',{method:'POST'});$('adrenalinStatus').textContent=r.message;}catch(e){$('adrenalinStatus').textContent=e.message;}finally{b.disabled=false;}});
 GpuQueue.init({api,clientId});refresh();PrivateImages.init({api});statusTimer=setInterval(refresh,10000);controls();
 
-window.addEventListener('pagehide',()=>{ui.abort?.abort();ui.history=[];ui.lastReply='';ui.file=null;if(ui.preview)URL.revokeObjectURL(ui.preview);ui.preview=null;$('editImage').value='';$('editPreview').removeAttribute('src');$('messages').replaceChildren();for(const id of ['chatInput','systemPrompt','generatePrompt','generateNegative','editPrompt','editNegative'])$(id).value='';});
+window.addEventListener('pagehide',()=>revokeAccess({status:404,message:'この画面の利用を終了しました。'}));
 
 
 

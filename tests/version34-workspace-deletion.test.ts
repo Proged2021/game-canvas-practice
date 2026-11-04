@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -6,17 +7,17 @@ const root = new URL("../", import.meta.url);
 const read = (path: string) => readFile(new URL(path, root), "utf8");
 
 test("ownerカードだけに開くリンクとは独立した削除ボタンを描画する", async () => {
-  const source = await read("components/dashboard-client.tsx");
+  const [source, actions] = await Promise.all([read("components/dashboard/workspace-list.tsx"), read("components/dashboard/use-workspace-deletion.ts")]);
   assert.match(source, /<article className="workspace-card-shell"/);
   assert.match(source, /<a[\s\S]*className="workspace-card"[\s\S]*href=\{`\/w\/\$\{item\.slug\}`\}/);
   assert.match(source, /\{item\.role === "owner" && \([\s\S]*workspace-delete-button/);
   assert.match(source, /aria-label=\{`ワークスペース「\$\{item\.name\}」を削除`\}/);
-  assert.match(source, /event\.preventDefault\(\);[\s\S]*event\.stopPropagation\(\)/);
+  assert.match(actions, /event\.preventDefault\(\);[\s\S]*event\.stopPropagation\(\)/);
   assert.ok(source.indexOf("</a>") < source.indexOf('className="workspace-delete-button"'));
 });
 
 test("確認ダイアログは削除範囲・不可逆性・対象名を日本語で示す", async () => {
-  const source = await read("components/dashboard-client.tsx");
+  const source = await read("components/dashboard/workspace-delete-dialog.tsx");
   assert.match(source, /ワークスペース「\{deleteTarget\?\.name\}」を削除しますか？/);
   assert.match(source, /すべての場面、本文、Confluence関連付け、内部保存画像、招待・メンバー情報/);
   assert.match(source, /この操作は元に戻せません/);
@@ -25,7 +26,7 @@ test("確認ダイアログは削除範囲・不可逆性・対象名を日本�
 });
 
 test("キャンセルが初期フォーカスでEscape・focus trapはAlertDialogに委譲する", async () => {
-  const source = await read("components/dashboard-client.tsx");
+  const source = await read("components/dashboard/workspace-delete-dialog.tsx");
   assert.match(source, /onOpenAutoFocus=\{\(event\) => \{[\s\S]*cancelDeleteRef\.current\?\.focus\(\)/);
   assert.match(source, /<AlertDialogCancel ref=\{cancelDeleteRef\}/);
   assert.match(source, /aria-labelledby="workspace-delete-title"/);
@@ -33,29 +34,31 @@ test("キャンセルが初期フォーカスでEscape・focus trapはAlertDialo
 });
 
 test("完全一致まで危険ボタンを無効化し二重送信を防ぐ", async () => {
-  const source = await read("components/dashboard-client.tsx");
-  assert.match(source, /deleteConfirmation !== deleteTarget\.name/);
-  assert.match(source, /!deleteTarget \|\|[\s\S]*deleting \|\|/);
-  assert.match(source, /setDeleting\(true\)/);
-  assert.match(source, /disabled=\{[\s\S]*deleting[\s\S]*deleteConfirmation !== deleteTarget\.name/);
-  assert.match(source, /削除中…/);
+  const [dialog, actions] = await Promise.all([read("components/dashboard/workspace-delete-dialog.tsx"), read("components/dashboard/use-workspace-deletion.ts")]);
+  assert.match(actions, /deleteConfirmation !== deleteTarget\.name/);
+  assert.match(actions, /!deleteTarget \|\|[\s\S]*deleting \|\|/);
+  assert.match(actions, /setDeleting\(true\)/);
+  assert.match(dialog, /disabled=\{[\s\S]*deleting[\s\S]*deleteConfirmation !== deleteTarget\.name/);
+  assert.match(dialog, /削除中…/);
 });
 
-test("成功時カードを即時除去し通知して隣接カードか作成ボタンへフォーカスする", async () => {
-  const source = await read("components/dashboard-client.tsx");
-  assert.match(source, /current\.filter\(\(item\) => item\.slug !== target\.slug\)/);
-  assert.match(source, /setNotice\("ワークスペースを削除しました"\)/);
-  assert.match(source, /workspaceLinkRefs\.current\.get\(nextFocusSlug\)\?\.focus\(\)/);
-  assert.match(source, /getElementById\("dashboard-create-workspace"\)\?\.focus\(\)/);
-  assert.match(source, /aria-live="polite"/);
+test("成功時カードを即時除去し通知して隣接カードか検索欄・作成ボタンへフォーカスする", async () => {
+  const [actions, workspaces, dashboard] = await Promise.all([read("components/dashboard/use-workspace-deletion.ts"), read("components/dashboard/use-workspaces.ts"), read("components/dashboard-client.tsx")]);
+  assert.match(workspaces, /current\.filter\(\(item\) => item\.slug !== slug\)/);
+  assert.match(actions, /removeWorkspace\(target\.slug\)/);
+  assert.match(dashboard, /removeWorkspace: workspaces\.removeWorkspace/);
+  assert.match(actions, /setNotice\("ワークスペースを削除しました"\)/);
+  assert.match(actions, /workspaceLinkRefs\.current\.get\(nextFocusSlug\)\?\.focus\(\)/);
+  assert.match(actions, /getElementById\(query \? "workspace-search" : "dashboard-create-workspace"\)\?\.focus\(\)/);
+  assert.match(dashboard, /aria-live="polite"[\s\S]*deletion\.notice/);
 });
 
 test("失敗時は削除せず具体的な日本語エラーを残して再操作可能にする", async () => {
-  const source = await read("components/dashboard-client.tsx");
-  assert.match(source, /if \(!response\.ok \|\| !result\.ok\)/);
-  assert.match(source, /ワークスペースを削除できませんでした。もう一度お試しください/);
-  assert.match(source, /finally \{[\s\S]*setDeleting\(false\)/);
-  assert.match(source, /role="alert"/);
+  const [actions, dialog] = await Promise.all([read("components/dashboard/use-workspace-deletion.ts"), read("components/dashboard/workspace-delete-dialog.tsx")]);
+  assert.match(actions, /if \(!response\.ok \|\| !result\.ok\)/);
+  assert.match(actions, /ワークスペースを削除できませんでした。もう一度お試しください/);
+  assert.match(actions, /finally \{[\s\S]*setDeleting\(false\)/);
+  assert.match(dialog, /role="alert"/);
 });
 
 test("DELETEは認証・same-origin JSON・CSRFを必須にする", async () => {
@@ -64,7 +67,7 @@ test("DELETEは認証・same-origin JSON・CSRFを必須にする", async () => 
   assert.match(route, /requireApiUser\(\)/);
   assert.match(route, /validateSameOriginJson\(request, "delete-workspace"\)/);
   assert.match(route, /status: 403/);
-  assert.match(route, /cache-control.*no-store/s);
+  assert.match(route, /cache-control[\s\S]*no-store/);
 });
 
 test("対象IDは認証済みowner一覧から解決し非ownerを403にする", async () => {
@@ -91,7 +94,7 @@ test("D1 transactional batchはworkspace所属テーブルの対象データを�
     read("lib/workspace-deletion.ts"),
   ]);
   const tables = [...schema.matchAll(/sqliteTable\(\s*"([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(new Set(tables).size, 23);
+  assert.equal(new Set(tables).size, 27);
   for (const table of new Set(tables)) {
     // Connector heartbeat belongs to the server, not to a workspace.
     if (table === "lllm_bridge_state") continue;
@@ -123,18 +126,21 @@ test("画像chunk・soft-delete場面・招待・Confluence・membershipを対�
     "scene_confluence_sources", "confluence_attachments",
     "workspace_join_requests", "secure_workspace_invites",
     "workspace_invitations", "oauth_states", "members",
-    "account_memberships", "confluence_connections", "scenes",
+    "account_memberships", "confluence_connections", "scenes", "workspace_custom_extensions",
   ]) assert.match(deletion, new RegExp(`DELETE FROM ${table}[\\s\\S]{0,180}workspace_id=\\?1`));
   assert.match(deletion, /scene_confluence_asset_chunks[\s\S]*asset_key IN[\s\S]*scene_confluence_assets WHERE workspace_id=\?1/);
 });
 
 test("共有Secretsや他workspaceのデータを削除せず機密情報をログしない", async () => {
-  const [deletion, route, client] = await Promise.all([
+  const [deletion, route, ...client] = await Promise.all([
     read("lib/workspace-deletion.ts"),
     read("app/api/workspaces/[slug]/route.ts"),
     read("components/dashboard-client.tsx"),
+    read("components/dashboard/use-workspace-deletion.ts"),
+    read("components/dashboard/use-workspace-editor.ts"),
+    read("components/dashboard/use-workspaces.ts"),
   ]);
-  const combined = `${deletion}\n${route}\n${client}`;
+  const combined = [deletion, route, ...client].join("\n");
   assert.doesNotMatch(combined, /console\.|analytics|ATLASSIAN_CLIENT_SECRET|TOKEN_ENCRYPTION_KEY/);
   assert.doesNotMatch(deletion, /DELETE FROM workspaces(?! WHERE)/);
   assert.match(deletion, /WHERE id=\?1 AND slug=\?2 AND name=\?3/);
@@ -150,7 +156,7 @@ test("同じDELETE再送は既に無い対象に対して安全な成功を返�
 test("削除後のworkspace・場面・画像・同期APIは共通認可で404になる", async () => {
   const auth = await read("lib/auth.ts");
   assert.match(auth, /if \(!membership\)[\s\S]*status: 404/);
-  assert.match(auth, /cache-control.*no-store/s);
+  assert.match(auth, /cache-control[\s\S]*no-store/);
   assert.doesNotMatch(auth, /if \(!membership\)[\s\S]*このワークスペースへの招待/);
 });
 
@@ -166,11 +172,11 @@ test("モバイル・長名・キーボードfocus表示を維持する", async 
 test("runtimeVersion 40をno-storeで公開しversion33以前の主要機能を保持する", async () => {
   const [version, runtime, dashboard, workspace, markdown] = await Promise.all([
     read("lib/runtime-version.ts"), read("app/api/runtime/route.ts"),
-    read("components/dashboard-client.tsx"), read("components/workspace-client.tsx"),
+    read("components/dashboard/workspace-list.tsx"), readWorkspaceSource(),
     read("components/markdown-view.tsx"),
   ]);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
   assert.match(dashboard, /copy|workspace-delete-button/i);
   assert.match(workspace, /別の方法で画像を追加/);
   assert.match(workspace, /restoreScene/);

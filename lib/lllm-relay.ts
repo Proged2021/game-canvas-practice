@@ -35,9 +35,15 @@ export async function connectorAuthenticated(request: Request) {
 
 export async function cleanupRelay() {
   // Explicitly remove ciphertext too, even on databases without FK enforcement.
+  const now = Date.now();
+  const expired = `SELECT j.id FROM lllm_bridge_jobs j WHERE j.expires_at<?1 OR NOT EXISTS (
+    SELECT 1 FROM lllm_browser_job_sessions s JOIN lllm_browser_authorizations a ON a.token_hash=s.session_hash
+    WHERE s.job_id=j.id AND a.kind='session' AND a.workspace_id=j.workspace_id AND a.account_key=j.account_key AND a.expires_at>?1)`;
   await db().batch([
-    db().prepare("DELETE FROM lllm_bridge_chunks WHERE job_id IN (SELECT id FROM lllm_bridge_jobs WHERE expires_at<?)").bind(Date.now()),
-    db().prepare("DELETE FROM lllm_bridge_jobs WHERE expires_at<?").bind(Date.now()),
+    db().prepare(`DELETE FROM lllm_bridge_chunks WHERE job_id IN (${expired})`).bind(now),
+    db().prepare(`DELETE FROM lllm_bridge_jobs WHERE id IN (${expired})`).bind(now),
+    db().prepare("DELETE FROM lllm_browser_job_sessions WHERE NOT EXISTS (SELECT 1 FROM lllm_bridge_jobs j WHERE j.id=job_id)"),
+    db().prepare("DELETE FROM lllm_browser_authorizations WHERE expires_at<=?1").bind(now),
   ]);
 }
 

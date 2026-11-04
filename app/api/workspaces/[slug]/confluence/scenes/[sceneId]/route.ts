@@ -1,7 +1,6 @@
 import { authorizeWorkspace } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { buildAvailableImageSlots } from "@/lib/confluence-manual-images";
-import { loadManualSceneAssets } from "@/lib/confluence-assets";
+import { loadStoredSceneImageSlots } from "@/lib/confluence-stored-image-slots";
 import { rewriteLocalHtmlImageSources, rewriteLocalMarkdownImageSources } from "@/lib/local-image-links";
 
 async function sceneInWorkspace(sceneId: string, workspaceId: string) {
@@ -34,20 +33,13 @@ export async function GET(
     .first();
   if (!source) return Response.json({ source: null, slots: [] }, { headers: { "cache-control": "no-store" } });
   const typed = source as { page_id: string; synced_html: string; local_html: string | null; local_markdown: string | null; local_revision: number; scene_markdown: string };
-  const manual = await loadManualSceneAssets(auth.membership.workspace_id, sceneId, typed.page_id);
-  const mapping = new Map(manual.map((item) => [item.slot_key, item.asset_key]));
-  const proxyPrefix = `/api/workspaces/${encodeURIComponent(auth.membership.workspace_id)}/scenes/${encodeURIComponent(sceneId)}/confluence/assets`;
-  const slots = (await buildAvailableImageSlots({
+  const slots = await loadStoredSceneImageSlots({
+    database: db(), workspaceId: auth.membership.workspace_id, sceneId,
     pageId: typed.page_id,
     syncedHtml: typed.synced_html,
     localMarkdown: typed.local_markdown,
     sceneMarkdown: typed.scene_markdown,
-  })).map((slot) => ({
-    slotKey: slot.slotKey,
-    label: slot.label,
-    status: mapping.has(slot.slotKey) ? "saved" : "missing",
-    src: mapping.has(slot.slotKey) ? `${proxyPrefix}/${mapping.get(slot.slotKey)}` : null,
-  }));
+  });
   const localMarkdown = typed.local_markdown == null
     ? null
     : rewriteLocalMarkdownImageSources(typed.local_markdown, slots);

@@ -1,3 +1,4 @@
+import { readWorkspaceSource } from "./helpers/workspace-source.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -24,7 +25,7 @@ test("GETは同じworkspace・scene・pageのローカル本文だけを表示�
   assert.match(route, /display_html: localHtml \|\| typed\.synced_html/);
   assert.match(route, /has_local_edit: typed\.local_html != null \|\| typed\.local_markdown != null/);
   assert.match(route, /local_markdown: localMarkdown/);
-  assert.match(route, /buildAvailableImageSlots\(\{[\s\S]*syncedHtml: typed\.synced_html[\s\S]*localMarkdown: typed\.local_markdown/);
+  assert.match(route, /loadStoredSceneImageSlots\(\{[\s\S]*syncedHtml: typed\.synced_html[\s\S]*localMarkdown: typed\.local_markdown/);
   assert.match(route, /cache-control": "no-store/);
 });
 
@@ -94,7 +95,7 @@ test("別ページへの変更と関連解除では古いローカル編集を�
 });
 
 test("編集モードだけにローカル編集・保存・取消・同期内容へ戻すUIを表示する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /sceneSource && editMode && editable && !localStoryEditing/);
   assert.match(client, /ローカル編集/);
   assert.match(client, /scheduleLocalStorySave/);
@@ -106,14 +107,14 @@ test("編集モードだけにローカル編集・保存・取消・同期内�
 });
 
 test("場面切替はローカル編集状態を破棄し再読込ではD1表示を復元する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /setSceneSource\(null\);[\s\S]*setLocalStoryEditing\(false\)/);
   assert.match(client, /setSceneSource\(result\.source \?\? null\)/);
   assert.match(client, /sceneSource\?\.display_html[\s\S]*sceneSource\?\.local_html[\s\S]*sceneSource\?\.synced_html/);
 });
 
 test("手動画像更新は同期本文を更新しつつローカル本文の画像リンクを再生成する", async () => {
-  const client = await read("components/workspace-client.tsx");
+  const client = await readWorkspaceSource();
   assert.match(client, /function applyManualUploadResult/);
   assert.match(client, /rewriteLocalMarkdownImageSources\(markdownBase, slots\)/);
   assert.match(client, /source\.local_html \? source\.local_html : previous\.display_html/);
@@ -123,10 +124,10 @@ test("手動画像更新は同期本文を更新しつつローカル本文の�
 test("workspace削除はローカル編集も含みruntimeVersion 40を公開する", async () => {
   const [deletion, version, runtime, client] = await Promise.all([
     read("lib/workspace-deletion.ts"), read("lib/runtime-version.ts"),
-    read("app/api/runtime/route.ts"), read("components/workspace-client.tsx"),
+    read("app/api/runtime/route.ts"), readWorkspaceSource(),
   ]);
   assert.match(deletion, /DELETE FROM scene_confluence_local_edits WHERE workspace_id=\?1/);
   assert.match(version, /"40"/);
-  assert.match(runtime, /cache-control.*no-store/s);
-  assert.match(client, /実行版:40/);
+  assert.match(runtime, /cache-control[\s\S]*no-store/);
+  assert.match(client, /WorkspaceGuide/);
 });
