@@ -14,8 +14,11 @@ export function LoginLanding({ signInPath }: { signInPath: string }) {
         <div className="login-icon" aria-hidden="true">
           <ShieldCheck size={28} />
         </div>
-        <p className="eyebrow">GAME DESIGN WORKSPACES</p>
-        <h1 id="login-title">ChatGPTでログインしてください</h1>
+        <p className="eyebrow">game-canvas.app · GAME DESIGN WORKSPACES</p>
+        <h1 id="login-title">ゲーム企画書ワークスペース</h1>
+        <p>
+          ストーリーと場面メモを場面ごとに整理し、チームで共同編集するためのアプリです。MarkdownとConfluenceに対応しています。
+        </p>
         <p>
           ワークスペース、場面、Markdown、Confluence情報は、認証後に招待されたユーザーだけが表示できます。
         </p>
