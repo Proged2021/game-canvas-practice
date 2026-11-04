@@ -1,5 +1,8 @@
 /** Public product information only. Never add workspace or member data here. */
 export const PUBLIC_SITE_ORIGIN = "https://game-canvas.app";
+// Public ownership proof for the user-approved Google Search Console account.
+// Google requires this tag to remain published after verification.
+export const PUBLIC_GOOGLE_SITE_VERIFICATION = "FZ3IE8RkINwuwytL58WSxjBBxIwnTKnVwzX7tdchjZk";
 export const PUBLIC_SITE_TITLE = "ゲーム企画書ワークスペース | game-canvas.app";
 export const PUBLIC_SITE_DESCRIPTION =
   "ストーリーと場面メモを場面ごとに整理し、チームで共同編集するゲーム企画書アプリ。MarkdownとConfluenceに対応し、ワークスペースの内容は招待されたメンバーだけが利用できます。";
