@@ -1,0 +1,53 @@
+{
+  "upstream": {
+    "package": "@vercel/og",
+    "version": "1.0.3",
+    "tarball": "https://registry.npmjs.org/@vercel/og/-/og-1.0.3.tgz",
+    "integrity": "sha512-/iYJ34PDu4lty1TXdL86qHEw8viveHTllG1PWLuJX8tSFfqKL7kyVJeUORJmQ250bHB0h+alcalXUlza3c/NSA=="
+  },
+  "security": {
+    "satori": "0.33.5",
+    "advisory": "GHSA-wx4j-mvgx-mqwp",
+    "officialFix": "https://github.com/vercel/satori/commit/26a52affc031216fee5882b6e965c8dbc7ac1782"
+  },
+  "harfbuzz": {
+    "package": "harfbuzzjs",
+    "version": "0.10.0",
+    "wasmSha256": "d2ab975172d6103e7624e8f7f03fea2316eca6fe562e1b80fc7f7058b283a6d0"
+  },
+  "modifications": [
+    {
+      "file": "dist/index.node.js",
+      "upstreamSha256": "3269eb15ca135a0eb7e07ddf8af0b35711d6e75c56b84c6a6727c5626d59409c",
+      "patchedSha256": "b7cf6ca6af5bf2675837a5b5ffa784fed074dbd29c65f00b5be865fce4412198",
+      "changes": [
+        "Read the shipped official hb.wasm as a Node WebAssembly.Module.",
+        "Skip unused Node filesystem and Worker location discovery only when the supported instantiateWasm hook is present.",
+        "Supply a WebAssembly.Instance through the supported instantiateWasm hook.",
+        "Remove the sourceMappingURL pointing at the upstream unmodified source map."
+      ]
+    },
+    {
+      "file": "dist/index.edge.js",
+      "upstreamSha256": "919b0243f4f431b163ba0a56e3153e9417769db090d19e6dd22b5681d4126d67",
+      "patchedSha256": "6c5f2e900db7e1e366c8fcddd7dca4ba8f8f67bc3d38eaccdb322da4292ec523",
+      "changes": [
+        "Import the shipped official hb.wasm as a precompiled Worker module.",
+        "Skip unused Node filesystem and Worker location discovery only when the supported instantiateWasm hook is present.",
+        "Supply a WebAssembly.Instance through the supported instantiateWasm hook.",
+        "Remove the sourceMappingURL pointing at the upstream unmodified source map."
+      ]
+    }
+  ],
+  "shippedFileHashes": {
+    "dist/Geist-Regular.ttf": "bde046ddd9f20be35b0bd56cc79eb752b967fb6661a3fe76cb067bb09f871d76",
+    "dist/hb.wasm": "d2ab975172d6103e7624e8f7f03fea2316eca6fe562e1b80fc7f7058b283a6d0",
+    "dist/index.edge.d.ts": "f4a9e57aa696c97c66f7549e05499f53afc014c0128329e1c689bc2bacfdc7e5",
+    "dist/index.edge.js": "6c5f2e900db7e1e366c8fcddd7dca4ba8f8f67bc3d38eaccdb322da4292ec523",
+    "dist/index.node.d.ts": "4944565f853a8aa9bad2fd69068bb413cd31b09f5c0c1e7881a6d6e31d8e132b",
+    "dist/index.node.js": "b7cf6ca6af5bf2675837a5b5ffa784fed074dbd29c65f00b5be865fce4412198",
+    "dist/resvg.wasm": "9c1f8f54b842fcda3b72b06eba94a20b907958c443d73178da32b21ccb57b9bb",
+    "dist/types.d.ts": "00c5533cc08969a7cd06012669fc63db9f9bcd6abafd868904997eb930cdc1b2",
+    "dist/yoga.wasm": "7ba9c9483c8c38a468e9aef4a95ed72fad8a43594be8e5123eb3bdb6479edf5b"
+  }
+}
